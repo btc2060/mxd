@@ -10,7 +10,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from lionbot.brain import Brain
+from lionbot.brain import Brain, Mob
 from lionbot.config import Config
 from lionbot.vision import (Confirmer, Detection, Vision, detect_monsters,
                             make_template, measure_world_scale,
@@ -136,6 +136,21 @@ class VisionTests(unittest.TestCase):
             vision = Vision(config, Path(directory))
             with self.assertRaises(ValueError):
                 vision.observe(frame[:400])
+
+    def test_overlay_distinguishes_high_platform_from_targets_and_draws_height_band(self):
+        with tempfile.TemporaryDirectory() as directory:
+            frame, config = fixture(Path(directory))
+            vision = Vision(config, Path(directory))
+            vision.observe(frame)
+            obs = vision.observe(frame)
+            vision.detections += [Detection((450, 190, 40, 44), (470, 230), .99, True),
+                                  Detection((540, 260, 40, 44), (561, 300), .99, True)]
+            obs = replace(obs, mobs=tuple(Mob(d.feet, d.score, d.confirmed) for d in vision.detections))
+            output = vision.draw(frame, obs, "test")
+            self.assertEqual(tuple(output[260, 414]), (0, 255, 0))  # 同高、射程内。
+            self.assertEqual(tuple(output[190, 450]), (160, 160, 160))  # 高台，不能攻击。
+            self.assertEqual(tuple(output[260, 540]), (255, 160, 0))  # 同高，但太远。
+            self.assertEqual(tuple(output[278, 312]), (255, 0, 255))  # 脚底 Y=300 上方 22px。
 
     def test_offline_cli_produces_detection_artifact_without_windows(self):
         from dataclasses import asdict

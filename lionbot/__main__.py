@@ -8,7 +8,7 @@ from pathlib import Path
 
 import cv2
 
-from .brain import Brain
+from .brain import Brain, target_status
 from .config import load_config
 from .controls import InputCancelled, InputExecutor
 from .vision import Vision, read_image, write_image
@@ -64,7 +64,11 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
             frame = window.capture()
             obs = vision.observe(frame, focused=window.focused())
             action = brain.decide(obs, time.monotonic())
-            status = f"pos={obs.position} floor={brain.floor} mobs={sum(m.confirmed for m in obs.mobs)}/{len(obs.mobs)} {action.kind}:{action.direction}"
+            position = f"({obs.position[0]:.4f},{obs.position[1]:.4f})" if obs.position else "lost"
+            ready = sum(target_status(m, obs, config) == "ready" for m in obs.mobs)
+            height = sum(target_status(m, obs, config) == "height" for m in obs.mobs)
+            status = (f"pos={position} floor={brain.floor} mobs={sum(m.confirmed for m in obs.mobs)}/{len(obs.mobs)} "
+                      f"ready={ready} height={height} {action.kind}:{action.direction}")
             if action.reason != previous_status or loop_start - last_log >= 2:
                 print(f"{status} | {action.reason}")
                 previous_status, last_log = action.reason, loop_start
@@ -100,17 +104,32 @@ def main(argv=None) -> int:
     group.add_argument("--measure-scale", action="store_true")
     group.add_argument("--measure-teleport", action="store_true")
     group.add_argument("--check-position", action="store_true", help="实时显示小地图 X/Y 和黄点红圈，不要求完成校准")
+    group.add_argument("--calibrate-map", action="store_true", help="独立校准底层/顶层边界、Y 和梯子，不重采模板")
+    group.add_argument("--apply-map-profile", action="store_true", help="应用已确认 ROI=(24,73,137,103) 的地图实测值及单位换算")
     group.add_argument("--run", action="store_true", help="明确启用按键发送")
     group.add_argument("--observe", action="store_true", help="只观察（默认）")
     group.add_argument("--image", type=Path, help="离线检测一张客户区截图，不发送按键")
     parser.add_argument("--restart-calibration", action="store_true", help="配合 --calibrate 重新校准，保留旧图和备份")
     parser.add_argument("--reuse-templates", type=Path, help="配合 --calibrate 复用旧采样文件夹，补录丢失的脚底位置")
+    parser.add_argument("--bottom-only", action="store_true", help="配合 --calibrate-map 仅记录底层并关闭自动换层")
     parser.add_argument("--output", type=Path, default=Path("debug-output/detections.png"))
     args = parser.parse_args(argv)
     if (args.restart_calibration or args.reuse_templates is not None) and not args.calibrate:
         parser.error("--restart-calibration / --reuse-templates 只能与 --calibrate 一起使用")
+    if args.bottom_only and not args.calibrate_map:
+        parser.error("--bottom-only 只能与 --calibrate-map 一起使用")
     path = args.config.resolve()
     try:
+        if args.apply_map_profile:
+            from .map_calibration import apply_map_profile
+
+            apply_map_profile(path)
+            return 0
+        if args.calibrate_map:
+            from .map_calibration import calibrate_map
+
+            calibrate_map(path, bottom_only=args.bottom_only)
+            return 0
         if args.calibrate or args.measure_scale or args.measure_teleport:
             from .calibrate import calibrate, measure_teleport, update_scale
 

@@ -7,8 +7,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .brain import Mob, Observation
+from .brain import Mob, Observation, target_status
 from .config import Config
+
+
+TARGET_COLORS = {"ready": (0, 255, 0), "height": (160, 160, 160),
+                 "range": (255, 160, 0), "pending": (0, 180, 255),
+                 "unlocalized": (130, 130, 130), "uncalibrated": (180, 80, 180)}
 
 
 def read_image(path: Path) -> np.ndarray:
@@ -216,16 +221,22 @@ class Vision:
         output = frame.copy()
         for d in self.detections:
             x, y, w, h = d.box
-            color = (0, 255, 0) if d.confirmed else (0, 180, 255)
+            state = target_status(Mob(d.feet, d.score, d.confirmed), obs, self.c)
+            color = TARGET_COLORS[state]
             cv2.rectangle(output, (x, y), (x + w, y + h), color, 1)
             cv2.circle(output, tuple(map(int, d.feet)), 3, color, -1)
-            cv2.putText(output, f"{d.score:.2f} [{d.hits}]", (x, y - 4), 0, .4, color, 1)
+            dy = f" dY={d.feet[1] - obs.player_feet[1]:+.0f}" if obs.player_feet else ""
+            cv2.putText(output, f"{state.upper()}{dy} {d.score:.2f}", (x, y - 4), 0, .4, color, 1)
         if obs.player_feet:
             x, y = map(int, obs.player_feet)
             reach = round(self.c.attack_range * self.c.world_pixels_per_x)
+            tolerance = round(self.c.feet_tolerance_px)
+            cv2.rectangle(output, (x - reach, y - tolerance), (x + reach, y + tolerance), (255, 0, 255), 1)
             cv2.line(output, (x - reach, y), (x + reach, y), (255, 0, 255), 2)
             cv2.circle(output, (x, y), 5, (0, 255, 255), 2)
         cv2.putText(output, status, (12, output.shape[0] - 15), 0, .5, (0, 255, 255), 1)
+        cv2.putText(output, "GREEN: in range | GRAY: height | BLUE: far | ORANGE: pending",
+                    (12, output.shape[0] - 38), 0, .45, (230, 230, 230), 1)
         return output
 
 

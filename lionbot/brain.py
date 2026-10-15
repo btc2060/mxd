@@ -30,6 +30,24 @@ class Action:
 WAIT = Action("wait")
 
 
+def within_attack_height(player_feet, monster_feet, config: Config) -> bool:
+    """主画面脚底高度比较；小地图楼层 Y 不用于判断单只怪物能否命中。"""
+    return player_feet is not None and abs(monster_feet[1] - player_feet[1]) <= config.feet_tolerance_px
+
+
+def target_status(mob: Mob, obs: Observation, config: Config) -> str:
+    if not obs.focused or obs.position is None or obs.player_feet is None:
+        return "unlocalized"
+    if not within_attack_height(obs.player_feet, mob.feet, config):
+        return "height"
+    if not mob.confirmed:
+        return "pending"
+    if config.world_pixels_per_x is None:
+        return "uncalibrated"
+    distance = abs(mob.feet[0] - obs.player_feet[0]) / config.world_pixels_per_x
+    return "ready" if distance <= config.attack_range else "range"
+
+
 class Brain:
     """只使用最新观测；按键执行与决策分开，便于测试时序和路线。"""
 
@@ -106,7 +124,7 @@ class Brain:
                 self.teleport_fault = True
             self.teleport_origin = None
         if self.route in ("align", "drop_align") and stable is not None:
-            if any(abs(m.feet[1] - obs.player_feet[1]) <= self.c.feet_tolerance_px for m in obs.mobs):
+            if any(within_attack_height(obs.player_feet, m.feet, self.c) for m in obs.mobs):
                 # 去梯子/出口途中刷新怪物时，先取消换层，重新清理当前层。
                 self.route = ""
                 self.enter_floor(stable, now, x)
@@ -126,8 +144,7 @@ class Brain:
         if now >= self.next_alt:
             return Action("alt", reason="190 秒定时按键")
 
-        same_floor = [m for m in obs.mobs
-                      if abs(m.feet[1] - obs.player_feet[1]) <= self.c.feet_tolerance_px]
+        same_floor = [m for m in obs.mobs if within_attack_height(obs.player_feet, m.feet, self.c)]
         if same_floor:
             # 包括尚待第二帧确认的候选，不把识别抖动当成空场。
             self.last_mob_at = now
@@ -136,8 +153,7 @@ class Brain:
         scale = self.c.world_pixels_per_x
         if scale is None:
             return Action("wait", reason="缺少主画面/小地图距离校准")
-        in_range = [m for m in same_floor if m.confirmed and
-                    abs(m.feet[0] - obs.player_feet[0]) / scale <= self.c.attack_range]
+        in_range = [m for m in same_floor if target_status(m, obs, self.c) == "ready"]
         if in_range:
             left = [m for m in in_range if m.feet[0] < obs.player_feet[0]]
             right = [m for m in in_range if m.feet[0] >= obs.player_feet[0]]
@@ -194,7 +210,7 @@ class Brain:
             projected = x + (dx if direction == "right" else -dx)
             far_enough = all(abs(m.feet[0] - obs.player_feet[0]) / self.c.world_pixels_per_x
                              > dx + 0.025 for m in obs.mobs
-                             if abs(m.feet[1] - obs.player_feet[1]) <= self.c.feet_tolerance_px)
+                             if within_attack_height(obs.player_feet, m.feet, self.c))
             if low + self.c.boundary_margin <= projected <= high - self.c.boundary_margin and far_enough:
                 return Action("teleport", direction, "方向键 + F，瞬移后重新定位")
         reason = "瞬移位移超过安全上限，已停用 F，改用步行" if self.teleport_fault else "步行巡视"

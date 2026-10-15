@@ -1,8 +1,8 @@
 import unittest
 from dataclasses import replace
 
-from lionbot.brain import Action, Brain, Mob, Observation
-from lionbot.config import Config
+from lionbot.brain import Action, Brain, Mob, Observation, target_status
+from lionbot.config import Config, Floor
 
 
 def observation(x=.30, y=.759, mobs=(), focused=True):
@@ -58,6 +58,32 @@ class CombatTests(unittest.TestCase):
         brain = prepared()
         brain.facing = "right"
         self.assertNotEqual(brain.decide(observation(mobs=[Mob((450, 450))]), 1).kind, "attack")
+
+    def test_height_gate_is_independent_of_head_template_and_minimap_floor_y(self):
+        config = replace(Config(), bottom=Floor(.8107, .03, .97),
+                         world_pixels_per_x=2000, auto_route=False)
+        # 按用户画面的角色脚底 Y=587 和高台怪物脚底 Y=467 建立场景。
+        high = Mob((700, 467))
+        obs = Observation((.4, .8107), (655, 587), (high,))
+        brain = prepared(config, obs=obs)
+        brain.facing = "right"
+        self.assertEqual(target_status(high, obs, config), "height")
+        self.assertNotEqual(brain.decide(obs, 1).kind, "attack")
+        ground = Mob((745, 580))
+        obs = replace(obs, mobs=(high, ground))
+        self.assertEqual(target_status(ground, obs, config), "ready")
+        self.assertEqual(brain.decide(obs, 2).kind, "attack")
+
+    def test_height_range_and_confirmation_have_separate_reasons(self):
+        brain = prepared()
+        obs = observation()
+        for mob, expected in ((Mob((450, 477)), "height"),
+                              (Mob((450, 478)), "ready"),
+                              (Mob((450, 523)), "height"),
+                              (Mob((580, 500)), "range"),
+                              (Mob((450, 500), confirmed=False), "pending")):
+            with self.subTest(mob=mob):
+                self.assertEqual(target_status(mob, obs, brain.c), expected)
 
     def test_tentative_detection_prevents_false_empty_but_no_attack(self):
         brain = prepared()

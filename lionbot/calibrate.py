@@ -149,7 +149,7 @@ def require_bottom(position, config: Config, label: str) -> None:
             f"配置要求 Y={config.bottom.y:.4f}（允许 {low:.4f}～{high:.4f}），"
             f"小地图范围={config.minimap_roi}。若已在底层站稳，请运行 "
             "python -m lionbot --check-position，确认红圈标记的是角色黄点，"
-            "并核对小地图框选范围是否与原地图坐标一致。仅更换裁剪范围会同时改变 X、Y，"
+            "确认黄点正确后可运行 --calibrate-map 重测地图点位，无需重采模板。仅更换裁剪范围会同时改变 X、Y，"
             "不能只修改底层 Y 而继续沿用原梯子和边界坐标。")
 
 
@@ -313,7 +313,8 @@ def calibrate(path: Path, restart: bool = False, reuse_templates: Path | None = 
             config = replace(config, minimap_roi=minimap_roi, frame_size=tuple(frame.shape[1::-1]))
             get_position(frame, config)
             save_config(path, config)
-        print(f"当前角色小地图位置：{get_position(frame, config)}；在底层时 Y 应接近 0.759。")
+        print(f"当前角色小地图位置：{get_position(frame, config)}；底层配置 Y={config.bottom.y:.4f}，"
+              "不一致时用 --calibrate-map 重测地图点位。")
         if config.combat_roi is None:
             print("框选主画面的游戏区域，排除底部 HP/MP、聊天栏；程序另行排除小地图。")
             config = replace(config, combat_roi=select_roi("Combat area / exclude HUD", frame))
