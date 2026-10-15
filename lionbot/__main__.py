@@ -64,12 +64,16 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
         listener.start()
         print("运行模式：" + ("发送按键" if run else "仅观察，不发送按键"))
         print("F8 暂停/恢复，F12 退出。请将游戏置于前台；失焦立即停止输入。")
-        print("所有坐标基于已校准的小地图；不处理第二个台阶或中间层。")
+        print(f"黄点导航，只打行进方向前方；底层 {config.patrol_round_trips} 个完整往返后沿途清怪去梯子。")
+        print(f"识别后每组 {config.attack_burst_shots} 次攻击；步行途中随机插入 1～{config.random_attack_max_shots} 次。")
+        if vision.mapper.notice:
+            print(vision.mapper.notice)
         print(f"攻击距离 X={config.attack_range:.4f}，约 {config.attack_range * config.world_pixels_per_x:.0f}px；"
               f"间隔 {config.attack_interval:.1f}s。步行为主，巡逻瞬移至少间隔 {max(12, config.teleport_cooldown):.0f}s。")
         if run:
             print("有效定位后先按一次 Alt，之后每 190 秒按一次；暂停/失焦后恢复不重复首按。")
         previous_status = ""
+        previous_source = ""
         last_log = 0.0
         while not stopped.is_set():
             loop_start = time.monotonic()
@@ -78,7 +82,6 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
                     executor.stop()
                 vision.reset()
                 brain.reset_observation()
-                brain.last_mob_at = loop_start
                 if loop_start - last_log >= 2:
                     print("已暂停，按 F8 恢复。" if paused.is_set() else "游戏失焦：已松键，请点回游戏。")
                     last_log = loop_start
@@ -88,11 +91,15 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
             frame = window.capture()
             obs = vision.observe(frame, focused=window.focused())
             action = brain.decide(obs, time.monotonic())
+            if obs.location_source == "unmapped" and previous_source != "unmapped":
+                print("主画面前方/高度暂未定位；黄点导航与随机攻击继续。可运行 --calibrate-anchor，点一次脚底建立参考。")
+            previous_source = obs.location_source
             position = f"({obs.position[0]:.4f},{obs.position[1]:.4f})" if obs.position else "lost"
-            ready = sum(target_status(m, obs, config) == "ready" for m in obs.mobs)
-            height = sum(target_status(m, obs, config) == "height" for m in obs.mobs)
+            ready = sum(target_status(m, obs, config, brain.direction) == "ready" for m in obs.mobs)
+            height = sum(target_status(m, obs, config, brain.direction) == "height" for m in obs.mobs)
             status = (f"pos={position} floor={brain.floor} mobs={sum(m.confirmed for m in obs.mobs)}/{len(obs.mobs)} "
                       f"ready={ready} height={height} recovered={sum(m.recovered for m in obs.mobs)} "
+                      f"screen={obs.location_source} laps={brain.completed_round_trips}/{config.patrol_round_trips} "
                       f"{action.kind}:{action.direction}")
             if action.reason != previous_status or loop_start - last_log >= 2:
                 print(f"{status} | {action.reason}")
@@ -110,7 +117,7 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
                     cv2.namedWindow(preview_title, cv2.WINDOW_NORMAL)
                     cv2.resizeWindow(preview_title, 640, round(frame.shape[0] * 640 / frame.shape[1]))
                     preview_open = True
-                cv2.imshow(preview_title, vision.draw(frame, obs, status))
+                cv2.imshow(preview_title, vision.draw(frame, obs, status, brain.direction))
                 preview_events()
             time.sleep(max(.001, 1 / 15 - (time.monotonic() - loop_start)))
     finally:
@@ -136,6 +143,7 @@ def main(argv=None) -> int:
     group.add_argument("--measure-teleport", action="store_true")
     group.add_argument("--check-position", action="store_true", help="实时显示小地图 X/Y 和黄点红圈，不要求完成校准")
     group.add_argument("--calibrate-map", action="store_true", help="独立校准底层/顶层边界、Y 和梯子，不重采模板")
+    group.add_argument("--calibrate-anchor", action="store_true", help="点击一次脚底，建立黄点与主画面地形对应，不重采名牌/怪物")
     group.add_argument("--apply-map-profile", action="store_true", help="应用已确认 ROI=(24,73,137,103) 的地图实测值及单位换算")
     group.add_argument("--run", action="store_true", help="明确启用按键发送")
     group.add_argument("--observe", action="store_true", help="只观察（默认）")
@@ -151,6 +159,11 @@ def main(argv=None) -> int:
         parser.error("--bottom-only 只能与 --calibrate-map 一起使用")
     path = args.config.resolve()
     try:
+        if args.calibrate_anchor:
+            from .screen_map import calibrate_anchor
+
+            calibrate_anchor(path)
+            return 0
         if args.apply_map_profile:
             from .map_calibration import apply_map_profile
 

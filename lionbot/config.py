@@ -25,6 +25,7 @@ class Config:
     frame_size: tuple[int, int] | None = None
     player_template: str = "calibration/player.png"
     player_feet_offset: tuple[float, float] | None = None
+    screen_anchor: str = "calibration/screen-anchor.json"
     template_manifest: str = "calibration/monsters.json"
     world_pixels_per_x: float | None = None
     bottom: Floor = Floor(0.759, 0.029, 0.659)
@@ -51,7 +52,12 @@ class Config:
     hurt_threshold: float = 0.72
     target_memory_seconds: float = 1.45
     target_reacquire_seconds: float = 0.4
-    attack_burst_shots: int = 2
+    attack_burst_shots: int = 3
+    patrol_policy_version: int = 2
+    patrol_round_trips: int = 3
+    random_attack_min_seconds: float = 6.0
+    random_attack_max_seconds: float = 12.0
+    random_attack_max_shots: int = 2
     player_partial_seconds: float = 0.35
     player_threshold: float = 0.82
     monster_threshold: float = 0.82
@@ -92,8 +98,14 @@ class Config:
             raise ValueError("受击追踪阈值必须不高于正常识别阈值，且位于 (0, 1]")
         if not 0 < self.confirmation_gap <= self.hurt_recovery_seconds <= 2:
             raise ValueError("识别间断和受击追踪时间必须满足 0 < gap <= recovery <= 2 秒")
-        if not 1 <= self.attack_burst_shots <= 2:
-            raise ValueError("一次目标确认最多衔接两次攻击")
+        if not 1 <= self.attack_burst_shots <= 3:
+            raise ValueError("一组识别攻击必须为 1～3 次")
+        if self.patrol_round_trips < 1:
+            raise ValueError("底层巡逻往返次数至少为 1")
+        if not 0 < self.random_attack_min_seconds <= self.random_attack_max_seconds:
+            raise ValueError("随机攻击时间范围必须为正数且按先小后大设置")
+        if not 1 <= self.random_attack_max_shots <= 3:
+            raise ValueError("一组随机攻击必须为 1～3 次")
         if not 0 < self.target_reacquire_seconds < self.target_memory_seconds <= 2:
             raise ValueError("目标重查时间必须小于记忆时间，记忆最长 2 秒")
         if not 0 < self.player_partial_seconds <= 0.5:
@@ -113,7 +125,7 @@ class Config:
     def require_calibration(self) -> None:
         self.validate()
         required = {"小地图范围": self.minimap_roi, "主画面范围": self.combat_roi,
-                    "窗口尺寸": self.frame_size, "角色脚底位置": self.player_feet_offset}
+                    "窗口尺寸": self.frame_size}
         missing = [name for name, value in required.items() if value is None]
         if missing:
             raise ValueError("尚缺少" + "、".join(missing)
@@ -126,6 +138,9 @@ class Config:
 def load_config(path: str | Path) -> Config:
     source = Path(path)
     raw = json.loads(source.read_text(encoding="utf-8")) if source.exists() else {}
+    if raw.get("patrol_policy_version", 1) < 2:
+        # 已有配置通常显式保存了旧版的两次攻击，升级时采用新的三次巡逻策略。
+        raw.update(patrol_policy_version=2, attack_burst_shots=3)
     for name in ("bottom", "top"):
         if name in raw:
             raw[name] = Floor(**raw[name])

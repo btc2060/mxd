@@ -1,380 +1,358 @@
+import json
+import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
 
 from lionbot.brain import Action, Brain, Mob, Observation, target_status
-from lionbot.config import Config, Floor
+from lionbot.config import Config, Floor, load_config
 
 
-def observation(x=.30, y=.759, mobs=(), focused=True):
-    return Observation((x, y), (400, 500), tuple(mobs), focused)
+def observation(x=.30, y=.759, mobs=(), focused=True, feet=(400, 500)):
+    return Observation((x, y), feet, tuple(mobs), focused)
 
 
-def prepared(config=None, mode="auto", obs=None):
+def prepared(config=None, mode="auto", obs=None, direction="right"):
     brain = Brain(config or replace(Config(), world_pixels_per_x=2000,
                                      teleport_max_dx=.045, auto_route=False), mode, start_alt=False)
     for now in (0, .05, .10):
         brain.decide(obs or observation(), now)
+    brain.next_random = float("inf")
+    if direction is not None:
+        brain.direction = direction
     return brain
 
 
 class CombatTests(unittest.TestCase):
-    def test_face_then_attack_and_actual_press_interval(self):
+    def test_face_forward_then_three_attacks_use_actual_press_interval(self):
         brain = prepared()
         obs = observation(mobs=[Mob((550, 500))])
-        action = brain.decide(obs, 1)
-        self.assertEqual((action.kind, action.direction), ("face", "right"))
-        brain.executed(action, 1.02, obs)
+        face = brain.decide(obs, 1)
+        self.assertEqual((face.kind, face.direction), ("face", "right"))
+        brain.executed(face, 1.02, obs)
         self.assertEqual(brain.decide(obs, 1.10).kind, "wait")
-        action = brain.decide(obs, 1.2)
-        self.assertEqual(action.kind, "attack")
-        brain.executed(action, 1.23, obs)
-        self.assertEqual(brain.decide(obs, 2.12).kind, "wait")
-        self.assertEqual(brain.decide(obs, 2.131).kind, "attack")
+        for press in (1.23, 2.131, 3.032):
+            action = brain.decide(obs, press)
+            self.assertEqual(action.kind, "attack")
+            brain.executed(action, press, obs)
+            self.assertEqual(brain.decide(obs, press + .899).kind, "wait")
+        self.assertEqual(brain.decide(obs, 3.933).kind, "walk")
 
-    def test_hurt_gap_allows_second_attack_but_no_third_without_detection(self):
+    def test_hurt_or_missing_nameplate_does_not_interrupt_three_shot_burst(self):
+        brain = prepared()
+        brain.facing = "right"
+        first = observation(mobs=[Mob((550, 500))])
+        brain.executed(brain.decide(first, 1), 1, first)
+        lost_visual = observation(feet=None)
+        for now in (1.91, 2.82):
+            action = brain.decide(lost_visual, now)
+            self.assertEqual((action.kind, action.direction), ("attack", "right"))
+            brain.executed(action, now, lost_visual)
+        self.assertEqual(brain.decide(lost_visual, 3.73).kind, "walk")
+
+    def test_persistent_monster_requires_actual_walking_after_three_shots(self):
         brain = prepared()
         brain.facing = "right"
         obs = observation(mobs=[Mob((550, 500))])
-        action = brain.decide(obs, 1)
-        brain.executed(action, 1, obs)
-        second = brain.decide(observation(), 1.91)
-        self.assertEqual(second.kind, "attack")
-        brain.executed(second, 1.91, observation())
-        self.assertNotEqual(brain.decide(observation(), 2.82).kind, "attack")
+        for now in (1, 2, 3):
+            brain.executed(brain.decide(obs, now), now, obs)
+        for now in (4, 5):
+            self.assertEqual(brain.decide(obs, now).kind, "walk")
+        brain.executed(Action("walk", "right"), 5, obs)
+        moved = observation(x=.32, mobs=[Mob((550, 500))])
+        self.assertEqual(brain.decide(moved, 5.1).kind, "attack")
 
-    def test_face_gap_stops_instead_of_walking_away_or_firing_first_blind_shot(self):
-        brain = prepared()
-        obs = observation(mobs=[Mob((250, 500))])
-        face = brain.decide(obs, 1)
-        brain.executed(face, 1, obs)
-        self.assertEqual(brain.decide(observation(), 1.13).kind, "wait")
-        self.assertEqual(brain.decide(obs, 1.3).kind, "attack")
-        self.assertEqual(brain.direction, "left")
+    def test_only_front_monsters_can_start_burst_no_turn_toward_rear(self):
+        for direction, behind in (("right", 250), ("left", 550)):
+            brain = prepared(direction=direction)
+            brain.facing = direction
+            obs = observation(mobs=[Mob((behind, 500))])
+            self.assertEqual(target_status(obs.mobs[0], obs, brain.c, direction), "behind")
+            action = brain.decide(obs, 1)
+            self.assertEqual((action.kind, action.direction), ("walk", direction))
 
-    def test_sticky_target_does_not_flip_when_other_side_has_more_monsters(self):
+    def test_monster_crossing_behind_does_not_reverse_attack_direction(self):
         brain = prepared()
         brain.facing = "right"
         obs = observation(mobs=[Mob((510, 500))])
-        action = brain.decide(obs, 1)
-        brain.executed(action, 1, obs)
-        more = observation(mobs=[Mob((510, 500)), Mob((260, 500)), Mob((320, 500))])
-        self.assertEqual(brain.decide(more, 2).kind, "attack")
-        self.assertEqual(brain.target.direction, "right")
+        brain.executed(brain.decide(obs, 1), 1, obs)
+        behind = observation(mobs=[Mob((250, 500)), Mob((310, 500))])
+        action = brain.decide(behind, 2)
+        self.assertEqual((action.kind, action.direction), ("attack", "right"))
+        self.assertEqual(brain.direction, "right")
 
-    def test_memory_expires_and_known_target_out_of_range_cancels_follow_up(self):
-        for next_obs, now in ((observation(), 3), (observation(mobs=[Mob((580, 500))]), 2),
-                              (observation(mobs=[Mob((550, 450))]), 2),
-                              (observation(x=.1), 2)):
-            with self.subTest(obs=next_obs):
+    def test_height_and_range_still_gate_first_detected_attack(self):
+        for mob in (Mob((450, 477)), Mob((450, 523)), Mob((573, 500))):
+            with self.subTest(mob=mob):
                 brain = prepared()
                 brain.facing = "right"
-                obs = observation(mobs=[Mob((550, 500))])
-                brain.executed(brain.decide(obs, 1), 1, obs)
-                self.assertNotEqual(brain.decide(next_obs, now).kind, "attack")
+                self.assertNotEqual(brain.decide(observation(mobs=[mob]), 1).kind, "attack")
+        brain = prepared()
+        brain.facing = "right"
+        self.assertEqual(brain.decide(observation(mobs=[Mob((572, 500))]), 1).kind, "attack")
 
-    def test_lost_localization_clears_pending_burst(self):
-        for lost in (Observation(None, (400, 500)), Observation((.3, .759), None),
-                     observation(focused=False)):
+    def test_height_uses_main_screen_feet_not_minimap_y_or_head_box(self):
+        config = replace(Config(), bottom=Floor(.8107, .03, .97),
+                         world_pixels_per_x=2000, auto_route=False)
+        high = Mob((700, 467))
+        obs = observation(x=.4, y=.8107, feet=(655, 587), mobs=[high])
+        brain = prepared(config, obs=obs)
+        brain.facing = "right"
+        self.assertEqual(target_status(high, obs, config, "right"), "height")
+        self.assertNotEqual(brain.decide(obs, 1).kind, "attack")
+        obs = replace(obs, mobs=(high, Mob((745, 580))))
+        self.assertEqual(brain.decide(obs, 2).kind, "attack")
+
+    def test_tentative_front_detection_pauses_for_confirmation(self):
+        brain = prepared()
+        obs = observation(mobs=[Mob((450, 500), confirmed=False)])
+        self.assertEqual(brain.decide(obs, 1).kind, "wait")
+        self.assertEqual(brain.decide(obs, 1.31).kind, "walk")
+        brain.facing = "right"
+        self.assertEqual(brain.decide(observation(mobs=[Mob((450, 500))]), 1.4).kind, "attack")
+
+    def test_recovered_detection_cannot_start_new_burst(self):
+        brain = prepared()
+        obs = observation(mobs=[Mob((550, 500), recovered=True)])
+        self.assertEqual(brain.decide(obs, 1).kind, "walk")
+
+    def test_focus_or_yellow_loss_clears_burst_but_nameplate_loss_does_not(self):
+        for lost in (Observation(None, (400, 500)), observation(focused=False)):
             brain = prepared()
             brain.facing = "right"
             obs = observation(mobs=[Mob((550, 500))])
             brain.executed(brain.decide(obs, 1), 1, obs)
             self.assertEqual(brain.decide(lost, 1.4).kind, "wait")
-            for now in (2, 2.1, 2.2):
-                self.assertNotEqual(brain.decide(observation(), now).kind, "attack")
+            self.assertIsNone(brain.burst)
+        brain = prepared()
+        self.assertEqual(brain.decide(observation(feet=None), 1).kind, "walk")
 
-    def test_recovered_match_can_finish_burst_but_cannot_start_another(self):
+    def test_large_displacement_cancels_burst(self):
         brain = prepared()
         brain.facing = "right"
         obs = observation(mobs=[Mob((550, 500))])
         brain.executed(brain.decide(obs, 1), 1, obs)
-        hurt = observation(mobs=[Mob((550, 500), recovered=True)])
-        second = brain.decide(hurt, 2)
-        self.assertEqual(second.kind, "attack")
-        brain.executed(second, 2, hurt)
-        self.assertNotEqual(brain.decide(hurt, 3).kind, "attack")
+        self.assertNotEqual(brain.decide(observation(x=.4), 2).kind, "attack")
 
-    def test_persistent_target_can_receive_more_than_two_attacks(self):
+    def test_random_attacks_require_walking_and_are_bounded_forward(self):
         brain = prepared()
+        brain.next_random = 2
         brain.facing = "right"
-        obs = observation(mobs=[Mob((550, 500))])
-        for now in (1, 2, 3):
+        obs = observation(feet=None)
+        self.assertEqual(brain.decide(obs, 3).kind, "walk")
+        for x in (.33, .36):
+            brain.executed(Action("walk", "right"), 3, obs)
+            obs = observation(x=x, feet=None)
+            brain.decide(obs, 3.1)
+        # 决策可建议随机攻击；未执行的建议不增加次数。
+        action = brain.decide(obs, 3.2)
+        self.assertEqual((action.kind, action.direction), ("attack", "right"))
+        count = brain.burst.limit
+        self.assertIn(count, (1, 2))
+        for index in range(count):
+            now = 3.2 + index
             action = brain.decide(obs, now)
             self.assertEqual(action.kind, "attack")
             brain.executed(action, now, obs)
+        self.assertNotEqual(brain.decide(obs, 3.2 + count).kind, "attack")
+        self.assertGreater(brain.next_random, 3.2 + count)
 
-    def test_range_is_minimap_distance_not_pixel_fraction(self):
-        brain = prepared()
-        brain.facing = "right"
-        self.assertEqual(brain.decide(observation(mobs=[Mob((572, 500))]), 1).kind, "attack")
-        self.assertNotEqual(brain.decide(observation(mobs=[Mob((573, 500))]), 2).kind, "attack")
-
-    def test_different_floor_not_attacked(self):
-        brain = prepared()
-        brain.facing = "right"
-        self.assertNotEqual(brain.decide(observation(mobs=[Mob((450, 450))]), 1).kind, "attack")
-
-    def test_height_gate_is_independent_of_head_template_and_minimap_floor_y(self):
-        config = replace(Config(), bottom=Floor(.8107, .03, .97),
-                         world_pixels_per_x=2000, auto_route=False)
-        # 按用户画面的角色脚底 Y=587 和高台怪物脚底 Y=467 建立场景。
-        high = Mob((700, 467))
-        obs = Observation((.4, .8107), (655, 587), (high,))
-        brain = prepared(config, obs=obs)
-        brain.facing = "right"
-        self.assertEqual(target_status(high, obs, config), "height")
-        self.assertNotEqual(brain.decide(obs, 1).kind, "attack")
-        ground = Mob((745, 580))
-        obs = replace(obs, mobs=(high, ground))
-        self.assertEqual(target_status(ground, obs, config), "ready")
-        self.assertEqual(brain.decide(obs, 2).kind, "attack")
-
-    def test_height_range_and_confirmation_have_separate_reasons(self):
-        brain = prepared()
-        obs = observation()
-        for mob, expected in ((Mob((450, 477)), "height"),
-                              (Mob((450, 478)), "ready"),
-                              (Mob((450, 523)), "height"),
-                              (Mob((580, 500)), "range"),
-                              (Mob((450, 500), confirmed=False), "pending")):
-            with self.subTest(mob=mob):
-                self.assertEqual(target_status(mob, obs, brain.c), expected)
-
-    def test_tentative_detection_prevents_false_empty_but_no_attack(self):
-        brain = prepared()
-        brain.empty_legs = 4
-        brain.facing = "right"
-        action = brain.decide(observation(mobs=[Mob((450, 500), confirmed=False)]), 10)
-        self.assertNotEqual(action.kind, "attack")
-        self.assertEqual(brain.empty_legs, 0)
-        self.assertEqual(brain.last_mob_at, 10)
-
-    def test_missing_position_or_player_or_focus_releases_input(self):
-        for obs in (Observation(None, (400, 500)), Observation((.3, .759), None),
-                    observation(focused=False)):
-            brain = prepared()
-            brain.empty_legs = 4
-            action = brain.decide(obs, 10)
-            self.assertEqual(action.kind, "wait")
-            self.assertEqual(brain.empty_legs, 0)
-
-    def test_alt_first_at_190_and_never_during_cast(self):
-        brain = prepared()
-        self.assertNotEqual(brain.decide(observation(), 189.9).kind, "alt")
+    def test_alt_starts_once_then_every_190_seconds_even_without_nameplate(self):
+        brain = Brain(replace(Config(), world_pixels_per_x=2000, auto_route=False))
+        obs = observation(feet=None)
+        for now in (0, .05):
+            self.assertEqual(brain.decide(obs, now).kind, "wait")
+        first = brain.decide(obs, .1)
+        self.assertEqual(first.kind, "alt")
+        brain.executed(first, .12, obs)
+        brain.reset_observation()
+        for now in (1, 1.1, 1.2, 190.119):
+            self.assertNotEqual(brain.decide(obs, now).kind, "alt")
         brain.busy_until = 190.5
-        self.assertEqual(brain.decide(observation(), 190).kind, "wait")
-        action = brain.decide(observation(), 190.6)
+        self.assertEqual(brain.decide(obs, 190.2).kind, "wait")
+        action = brain.decide(obs, 190.6)
         self.assertEqual(action.kind, "alt")
-        brain.executed(action, 190.62, observation())
+        brain.executed(action, 190.62, obs)
         self.assertAlmostEqual(brain.next_alt, 380.62)
 
-    def test_startup_alt_once_then_190_seconds_from_actual_press(self):
-        brain = Brain(replace(Config(), world_pixels_per_x=2000, auto_route=False))
-        self.assertEqual(brain.decide(observation(), 0).kind, "wait")
-        brain.decide(observation(), .05)
-        action = brain.decide(observation(), .1)
-        self.assertEqual(action.kind, "alt")
-        brain.executed(action, .12, observation())
-        self.assertNotEqual(brain.decide(observation(), .4).kind, "alt")
+
+class PatrolTests(unittest.TestCase):
+    def test_start_in_middle_seeks_left_inset_before_first_round_trip(self):
+        brain = prepared(direction=None)
+        self.assertEqual(brain.decide(observation(feet=None), 1).direction, "left")
+        low = brain.c.bottom.left + brain.c.turn_inset
+        self.assertGreater(low, brain.c.bottom.left)
+        brain.decide(observation(x=low), 2)
+        self.assertEqual(brain.direction, "right")
+        self.assertEqual(brain.completed_round_trips, 0)
+
+    def test_three_complete_round_trips_then_go_to_ladder_even_with_monsters(self):
+        config = replace(Config(), world_pixels_per_x=2000, teleport_max_dx=.045)
+        brain = prepared(config, direction=None)
+        low, high = config.bottom.left + config.turn_inset, config.bottom.right - config.turn_inset
+        brain.decide(observation(x=low), 1)
+        for lap in range(3):
+            # 怪物不会重置往返计数，观察建议也不能虚增计数。
+            brain.decide(observation(x=high, mobs=[Mob((550, 500))]), 2 + 2 * lap)
+            brain.decide(observation(x=low, mobs=[Mob((250, 500))]), 3 + 2 * lap)
+            self.assertEqual(brain.completed_round_trips, lap + 1)
+            self.assertEqual(brain.route, "align" if lap == 2 else "")
+        self.assertEqual(brain.direction, "right")
+
+    def test_partial_leg_and_repeated_edge_frames_do_not_count_as_round(self):
+        brain = prepared(direction=None)
+        low, high = brain.c.bottom.left + brain.c.turn_inset, brain.c.bottom.right - brain.c.turn_inset
+        brain.decide(observation(x=high), 1)
+        brain.decide(observation(x=low), 2)
+        for now in (3, 4, 5):
+            brain.decide(observation(x=low), now)
+        self.assertEqual(brain.completed_round_trips, 0)
+        brain.decide(observation(x=high), 6)
+        brain.decide(observation(x=low), 7)
+        self.assertEqual(brain.completed_round_trips, 1)
+
+    def test_pause_preserves_completed_laps_but_invalidates_partial_leg(self):
+        brain = prepared()
+        brain.completed_round_trips = 2
+        brain.lap_started = brain.right_reached = True
         brain.reset_observation()
-        for now in (1, 1.1, 1.2):
-            self.assertNotEqual(brain.decide(observation(), now).kind, "alt")
-        self.assertNotEqual(brain.decide(observation(), 190.119).kind, "alt")
-        action = brain.decide(observation(), 190.121)
-        self.assertEqual(action.kind, "alt")
-        brain.executed(action, 190.13, observation())
-        self.assertAlmostEqual(brain.next_alt, 380.13)
+        self.assertEqual(brain.completed_round_trips, 2)
+        self.assertFalse(brain.lap_started)
+        self.assertFalse(brain.right_reached)
 
-    def test_middle_floor_is_not_misclassified_as_top(self):
+    def test_explicit_bottom_mode_keeps_patrolling_after_three_rounds(self):
+        brain = prepared(replace(Config(), world_pixels_per_x=2000, teleport_max_dx=.045), mode="bottom")
+        brain.completed_round_trips = 3
+        brain.decide(observation(), 1)
+        self.assertEqual(brain.route, "")
+
+    def test_boundary_turn_happens_before_front_target_selection(self):
         brain = prepared()
-        for now in (1, 2, 3):
-            self.assertEqual(brain.decide(observation(y=.4), now).kind, "wait")
-
-
-class MovementTests(unittest.TestCase):
-    def test_patrol_starts_with_walking_even_with_legacy_fast_teleport_config(self):
-        brain = prepared()
-        brain.c = replace(brain.c, teleport_cooldown=.65)
-        action = brain.decide(observation(), 1)
-        self.assertEqual((action.kind, action.direction), ("walk", "right"))
-
-    def test_occasional_teleport_requires_time_and_real_walking(self):
-        brain = prepared()
-        obs = observation()
-        self.assertEqual(brain.decide(obs, 13).kind, "walk")
-        # 在软边界内来回实际步行 .16，不能单靠等待触发瞬移。
-        for index, x in enumerate((.34, .38, .34, .30)):
-            brain.executed(Action("walk", "right"), 14 + index, obs)
-            obs = observation(x=x)
-            brain.decide(obs, 14.1 + index)
-        action = brain.decide(obs, 18)
-        self.assertEqual(action.kind, "teleport")
-        brain.c = replace(brain.c, teleport_cooldown=.65)
-        brain.executed(action, 18.04, obs)
-        self.assertAlmostEqual(brain.next_teleport, 30.04)
-        self.assertEqual(brain.walked_since_teleport, 0)
-
-    def test_visible_monsters_prevent_patrol_teleport_even_after_cooldown(self):
-        brain = prepared()
-        brain.walked_since_teleport = 1
-        obs = observation(mobs=[Mob((620, 500))])
-        self.assertEqual(brain.decide(obs, 20).kind, "walk")
-
-    def test_no_uncalibrated_teleport(self):
-        brain = prepared(replace(Config(), world_pixels_per_x=2000, auto_route=False))
-        self.assertEqual(brain.decide(observation(), 1).kind, "walk")
-
-    def test_no_teleport_near_boundary(self):
-        brain = prepared(obs=observation(x=.59))
-        self.assertEqual(brain.decide(observation(x=.59), 1).kind, "walk")
-
-    def test_near_target_uses_walking(self):
-        brain = prepared()
-        # .09 超出射程 .086，但 .09 < 瞬移上限 .07 + 接近余量 .025。
-        brain.c = replace(brain.c, teleport_max_dx=.07)
-        self.assertEqual(brain.decide(observation(mobs=[Mob((580, 500))]), 1).kind, "walk")
-
-    def test_unexpected_large_teleport_disables_f(self):
-        brain = prepared()
-        brain.next_teleport = 0
-        brain.walked_since_teleport = 1
-        obs = observation()
-        action = brain.decide(obs, 1)
-        brain.executed(action, 1.04, obs)
-        brain.last_scan_x = .4
-        brain.decide(observation(x=.4), 1.5)
-        self.assertTrue(brain.teleport_fault)
-        self.assertNotEqual(brain.decide(observation(x=.4), 2).kind, "teleport")
-
-    def test_stationary_scan_does_not_attack_blindly(self):
-        brain = prepared()
-        action = brain.decide(observation(x=.36), 1)
+        brain.facing = "right"
+        x = brain.c.bottom.right - brain.c.turn_inset
+        action = brain.decide(observation(x=x, mobs=[Mob((550, 500))]), 1)
+        self.assertEqual(brain.direction, "left")
         self.assertEqual(action.kind, "scan")
+        self.assertNotEqual(action.kind, "attack")
 
-    def test_blocked_teleports_do_not_prevent_stuck_detection(self):
+    def test_stuck_walk_reverses_without_counting_incomplete_round(self):
         brain = prepared()
         obs = observation()
-        found = False
-        for index in range(100):
-            now = 1 + index * .2
+        for index in range(30):
+            now = 1 + index * .1
             action = brain.decide(obs, now)
             brain.executed(action, now, obs)
             if "卡住" in action.reason:
-                found = True
                 break
-        self.assertTrue(found)
+        else:
+            self.fail("连续步行未触发卡住检测")
         self.assertEqual(brain.direction, "left")
+        self.assertEqual(brain.completed_round_trips, 0)
 
-    def test_top_uses_separate_boundaries(self):
-        brain = prepared(obs=observation(x=.15, y=.130))
-        self.assertEqual(brain.floor, "top")
-        self.assertEqual(brain.direction, "left")
-        self.assertEqual(brain.decide(observation(x=.3, y=.130), 1).kind, "wait")
+    def test_middle_or_wrong_floor_does_not_move(self):
+        for y in (.4, .130):
+            brain = prepared(mode="bottom")
+            for now in (1, 2, 3):
+                self.assertEqual(brain.decide(observation(y=y, feet=None), now).kind, "wait")
+
+    def test_patrol_teleport_remains_occasional_and_safe_with_legacy_cooldown(self):
+        brain = prepared()
+        brain.c = replace(brain.c, teleport_cooldown=.65)
+        self.assertEqual(brain.decide(observation(), 1).kind, "walk")
+        brain.walked_since_teleport = 1
+        action = brain.decide(observation(), 13)
+        self.assertEqual(action.kind, "teleport")
+        brain.executed(action, 13.04, observation())
+        self.assertAlmostEqual(brain.next_teleport, 25.04)
+        brain.decide(observation(x=.4), 13.5)
+        self.assertTrue(brain.teleport_fault)
 
 
 class RouteTests(unittest.TestCase):
     def route_brain(self, obs=None):
-        return prepared(replace(Config(), world_pixels_per_x=2000,
-                                teleport_max_dx=.045), obs=obs)
+        return prepared(replace(Config(), world_pixels_per_x=2000, teleport_max_dx=.045), obs=obs)
 
-    def test_short_local_empty_does_not_climb(self):
+    def test_ladder_alignment_keeps_route_and_attacks_forward_then_continues(self):
         brain = self.route_brain()
-        for now in (1, 2, 10):
-            brain.decide(observation(), now)
-        self.assertEqual(brain.route, "")
+        brain.route = "align"
+        brain.completed_round_trips = 3
+        brain.facing = "right"
+        obs = observation(x=.1, mobs=[Mob((550, 500))], feet=(400, 500))
+        for now in (30, 31, 32):
+            action = brain.decide(obs, now)
+            self.assertEqual(action.kind, "attack")
+            brain.executed(action, now, obs)
+            self.assertEqual(brain.route, "align")
+        self.assertEqual(brain.decide(obs, 33).kind, "walk")
+        self.assertEqual(brain.completed_round_trips, 3)
+        self.assertEqual(brain.decide(observation(x=.212, feet=None), 34).kind, "grab")
 
-    def test_two_complete_empty_sweeps_required(self):
+    def test_whole_climb_exit_left_teleport_without_nameplate(self):
         brain = self.route_brain()
-        for edge in ("right", "left", "right", "left"):
-            brain.reach_edge(edge)
-        brain.decide(observation(), 10)
-        self.assertEqual(brain.route, "")
-        brain.reach_edge("right")
-        action = brain.decide(observation(), 11)
-        self.assertEqual(brain.route, "align")
-        self.assertEqual((action.kind, action.direction), ("walk", "left"))
-
-    def test_whole_climb_exit_then_left_teleport(self):
-        brain = self.route_brain()
-        brain.empty_legs = 4
-        obs = observation(x=.212)
+        brain.route = "align"
+        obs = observation(x=.212, feet=None)
         action = brain.decide(obs, 10)
         self.assertEqual(action.kind, "grab")
         brain.executed(action, 10.04, obs)
-        self.assertEqual(brain.decide(observation(x=.212, y=.6), 10.6).kind, "climb")
-        action = brain.decide(observation(x=.212, y=.130), 11)
+        self.assertEqual(brain.decide(observation(x=.212, y=.6, feet=None), 10.6).kind, "climb")
+        action = brain.decide(observation(x=.212, y=.130, feet=None), 11)
         self.assertEqual(action.kind, "climb_exit")
-        brain.executed(action, 11, observation(x=.212, y=.130))
-        self.assertEqual(brain.decide(observation(x=.212, y=.130), 11.3).kind, "wait")
-        action = brain.decide(observation(x=.212, y=.130), 11.7)
+        brain.executed(action, 11, observation(x=.212, y=.130, feet=None))
+        self.assertEqual(brain.decide(observation(x=.212, y=.130, feet=None), 11.3).kind, "wait")
+        action = brain.decide(observation(x=.212, y=.130, feet=None), 11.7)
         self.assertEqual((action.kind, action.direction), ("top_teleport", "left"))
-        brain.executed(action, 11.74, observation(x=.212, y=.130))
-        action = brain.decide(observation(x=.17, y=.130), 12.2)
-        self.assertEqual(brain.floor, "top")
-        self.assertEqual(brain.route, "")
+        brain.executed(action, 11.74, observation(x=.212, y=.130, feet=None))
+        brain.decide(observation(x=.17, y=.130, feet=None), 12.2)
+        self.assertEqual((brain.floor, brain.route, brain.direction), ("top", "", "left"))
 
-    def test_no_unconfirmed_climb_success(self):
-        brain = self.route_brain()
-        brain.route, brain.route_started = "climb", 10
-        brain.climb_progress_at, brain.climb_y = 10, .6
-        action = brain.decide(observation(x=.212, y=.6), 12)
-        self.assertEqual(action.kind, "wait")
-        self.assertEqual(brain.floor, "bottom")
-        self.assertTrue(brain.route_disabled)
-
-    def test_top_walks_off_without_space_and_confirms_bottom(self):
+    def test_top_attacks_left_only_then_walks_off_and_resets_bottom_rounds(self):
         brain = self.route_brain(observation(x=.15, y=.130))
-        brain.empty_legs = 4
-        action = brain.decide(observation(x=.15, y=.130), 10)
-        self.assertEqual((action.kind, action.direction), ("walk", "left"))
-        action = brain.decide(observation(x=.049, y=.130), 11)
+        brain.next_random = float("inf")
+        brain.facing = "left"
+        high = observation(x=.15, y=.130, mobs=[Mob((250, 500)), Mob((550, 500))])
+        for now in (1, 2, 3):
+            action = brain.decide(high, now)
+            self.assertEqual((action.kind, action.direction), ("attack", "left"))
+            brain.executed(action, now, high)
+        brain.completed_round_trips = 3
+        action = brain.decide(observation(x=.049, y=.130, feet=None), 4)
         self.assertEqual(action.kind, "drop_walk")
-        brain.executed(action, 11, observation(x=.049, y=.130))
-        self.assertEqual(brain.decide(observation(x=.04, y=.4), 12).kind, "wait")
-        self.assertEqual(brain.route, "fall")
-        for now in (13, 13.1, 13.2):
-            brain.decide(observation(x=.04, y=.759), now)
-        self.assertEqual(brain.floor, "bottom")
-        self.assertEqual(brain.route, "")
+        brain.executed(action, 4, observation(x=.049, y=.130, feet=None))
+        self.assertEqual(brain.decide(observation(x=.04, y=.4, feet=None), 5).kind, "wait")
+        for now in (6, 6.1, 6.2):
+            brain.decide(observation(x=.04, feet=None), now)
+        self.assertEqual((brain.floor, brain.route, brain.completed_round_trips), ("bottom", "", 0))
 
-    def test_early_fall_during_alignment_is_handled(self):
+    def test_ladder_stuck_or_timeout_does_not_invent_top_arrival(self):
+        for now in (12, 30):
+            brain = self.route_brain()
+            brain.route, brain.route_started = "climb", 10
+            brain.climb_progress_at, brain.climb_y = 10, .6
+            action = brain.decide(observation(x=.212, y=.6, feet=None), now)
+            self.assertEqual(action.kind, "wait")
+            self.assertTrue(brain.route_disabled)
+            self.assertEqual(brain.floor, "bottom")
+
+    def test_early_fall_during_top_alignment_is_handled(self):
         brain = self.route_brain(observation(x=.15, y=.130))
-        brain.route, brain.route_started = "drop_align", 10
-        action = brain.decide(observation(x=.055, y=.25), 11)
-        self.assertEqual(action.kind, "wait")
+        brain.route = "drop_align"
+        brain.decide(observation(x=.055, y=.25, feet=None), 11)
         self.assertEqual(brain.route, "fall")
 
-    def test_timeout_disables_route_without_inventing_success(self):
-        brain = self.route_brain()
-        brain.route, brain.route_started = "climb", 1
-        brain.decide(observation(x=.212, y=.4), 30)
-        self.assertTrue(brain.route_disabled)
-        self.assertEqual(brain.floor, "bottom")
 
-    def test_explicit_floor_mode_never_auto_switches(self):
-        brain = prepared(replace(Config(), world_pixels_per_x=2000,
-                                 teleport_max_dx=.045), mode="bottom")
-        brain.empty_legs = 4
-        brain.decide(observation(), 10)
-        self.assertEqual(brain.route, "")
+class ConfigTests(unittest.TestCase):
+    def test_old_two_shot_json_upgrades_without_changing_templates_or_map(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps({"attack_burst_shots": 2, "player_template": "keep.png",
+                                        "bottom": {"y": .8107, "left": .0182, "right": .9745}}))
+            config = load_config(path)
+            self.assertEqual(config.attack_burst_shots, 3)
+            self.assertEqual(config.patrol_round_trips, 3)
+            self.assertEqual(config.player_template, "keep.png")
+            self.assertEqual(config.bottom.y, .8107)
 
-    def test_respawn_on_way_to_ladder_cancels_route_and_attacks(self):
-        brain = self.route_brain()
-        brain.route, brain.route_started = "align", 10
-        brain.facing = "right"
-        action = brain.decide(observation(mobs=[Mob((550, 500))]), 11)
-        self.assertEqual(brain.route, "")
-        self.assertEqual(brain.empty_legs, 0)
-        self.assertEqual(action.kind, "attack")
-
-    def test_f_disabled_does_not_prevent_walking_down_from_top(self):
-        brain = self.route_brain(observation(x=.15, y=.130))
-        brain.teleport_fault = True
-        brain.empty_legs = 4
-        action = brain.decide(observation(x=.15, y=.130), 10)
-        self.assertEqual(brain.route, "drop_align")
-        self.assertEqual((action.kind, action.direction), ("walk", "left"))
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_runtime_no_longer_requires_nameplate_offset(self):
+        config = replace(Config(), minimap_roi=(0, 0, 100, 100), combat_roi=(0, 100, 640, 300),
+                         frame_size=(640, 480), world_pixels_per_x=2000)
+        config.require_calibration()

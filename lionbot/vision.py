@@ -10,10 +10,12 @@ import numpy as np
 
 from .brain import Mob, Observation, target_status
 from .config import Config
+from .screen_map import ScreenMapper
 
 
 TARGET_COLORS = {"ready": (0, 255, 0), "height": (160, 160, 160),
                  "range": (255, 160, 0), "pending": (0, 180, 255),
+                 "behind": (100, 100, 190),
                  "unlocalized": (130, 130, 130), "uncalibrated": (180, 80, 180)}
 
 
@@ -252,9 +254,16 @@ class PlayerLocator:
 class Vision:
     def __init__(self, config: Config, root: Path):
         self.c = config
-        self.player_template = read_image(root / config.player_template)
+        self.player_template = None
+        self.locator = None
+        if config.player_feet_offset is not None and (root / config.player_template).exists():
+            try:
+                self.player_template = read_image(root / config.player_template)
+                self.locator = PlayerLocator(config, self.player_template)
+            except (ValueError, OSError):
+                pass  # 名牌仅作可选辅助，不能阻止黄点导航和怪物识别。
         self.templates = load_templates(root / config.template_manifest)
-        self.locator = PlayerLocator(config, self.player_template)
+        self.mapper = ScreenMapper(config, root)
         self.confirmer = Confirmer(config.confirmation_frames, config.confirmation_gap)
         self.detections: list[Detection] = []
         self.strong: list[tuple[Detection, float]] = []
@@ -265,33 +274,41 @@ class Vision:
         self.detections = []
         self.strong = []
         self.previous = None
-        self.locator.feet = None
-        self.locator.full_at = float("-inf")
+        if self.locator is not None:
+            self.locator.feet = None
+            self.locator.full_at = float("-inf")
 
     def observe(self, frame: np.ndarray, focused: bool = True, now: float | None = None) -> Observation:
         now = time.monotonic() if now is None else now
         if tuple(frame.shape[1::-1]) != self.c.frame_size:
             raise ValueError("客户区分辨率已改变，请恢复原尺寸或重新校准")
         position = minimap_position(frame, self.c.minimap_roi)
-        player = self.locator.locate(frame, now)
-        if not focused or position is None or player is None:
+        if not focused or position is None:
             self.reset()
-            return Observation(position, player, focused=focused)
+            return Observation(position, None, focused=focused, location_source="unmapped")
+        found = detect_monsters(frame, self.c.combat_roi, self.templates,
+                                self.c.monster_threshold, self.c.edge_threshold,
+                                excluded_roi=self.c.minimap_roi)
+        moving_boxes = [d.box for d in found]
+        player = self.mapper.locate(frame, position, moving_boxes)
+        source = "terrain" if player is not None else "unmapped"
+        if player is None:
+            visual = self.locator.locate(frame, now) if self.locator is not None else None
+            if visual is not None:
+                player, source = visual, "nameplate"
+                self.mapper.seed(frame, position, player, moving_boxes)
         shift = (0.0, 0.0)
         if self.previous is not None:
             if abs(position[1] - self.previous.position[1]) > self.c.floor_tolerance:
                 self.confirmer.reset()
                 self.strong = []
-            else:
+            elif player is not None and self.previous.player_feet is not None:
                 # 世界坐标来自小地图，剩余的主画面位移是镜头滚动。
                 shift = (player[0] - self.previous.player_feet[0]
                          - (position[0] - self.previous.position[0]) * self.c.world_pixels_per_x,
                          player[1] - self.previous.player_feet[1])
         self.strong = [(shift_detection(d, *shift), at) for d, at in self.strong
                        if now - at <= self.c.hurt_recovery_seconds]
-        found = detect_monsters(frame, self.c.combat_roi, self.templates,
-                                self.c.monster_threshold, self.c.edge_threshold,
-                                excluded_roi=self.c.minimap_roi)
         # 低阈值只在已确认怪物附近使用；受击匹配不延长正常姿态的有效期。
         rx, ry, rw, rh = self.c.combat_roi
         for seed, _ in self.strong:
@@ -316,15 +333,15 @@ class Vision:
                                if np.hypot(old.feet[0] - d.feet[0], old.feet[1] - d.feet[1]) > 35]
                 self.strong.append((d, now))
         mobs = tuple(Mob(d.feet, d.score, d.confirmed, d.recovered) for d in self.detections)
-        obs = Observation(position, player, mobs, focused)
+        obs = Observation(position, player, mobs, focused, source)
         self.previous = obs
         return obs
 
-    def draw(self, frame: np.ndarray, obs: Observation, status: str) -> np.ndarray:
+    def draw(self, frame: np.ndarray, obs: Observation, status: str, direction: str = "") -> np.ndarray:
         output = frame.copy()
         for d in self.detections:
             x, y, w, h = d.box
-            state = target_status(Mob(d.feet, d.score, d.confirmed), obs, self.c)
+            state = target_status(Mob(d.feet, d.score, d.confirmed), obs, self.c, direction)
             color = TARGET_COLORS[state]
             cv2.rectangle(output, (x, y), (x + w, y + h), color, 1)
             cv2.circle(output, tuple(map(int, d.feet)), 3, color, -1)
@@ -340,7 +357,7 @@ class Vision:
             cv2.line(output, (x - reach, y), (x + reach, y), (255, 0, 255), 2)
             cv2.circle(output, (x, y), 5, (0, 255, 255), 2)
         cv2.putText(output, status, (12, output.shape[0] - 15), 0, .5, (0, 255, 255), 1)
-        cv2.putText(output, "GREEN: in range | GRAY: height | BLUE: far | ORANGE: pending",
+        cv2.putText(output, "GREEN: ahead in range | GRAY: height | BLUE: far | RED: behind",
                     (12, output.shape[0] - 38), 0, .45, (230, 230, 230), 1)
         return output
 

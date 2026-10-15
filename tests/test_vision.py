@@ -129,14 +129,20 @@ class VisionTests(unittest.TestCase):
             self.assertEqual(obs.player_feet, (312, 300))
             self.assertEqual(len(obs.mobs), 1)
             self.assertTrue(obs.mobs[0].confirmed)
+            # 已走到左侧内缩点后，向右巡逻时遇到前方目标。
+            brain.direction = "right"
+            action = brain.decide(obs, .2)
             self.assertEqual(action.kind, "face")
             brain.executed(action, .2, obs)
-            self.assertEqual(brain.decide(vision.observe(frame), .4).kind, "attack")
+            action = brain.decide(vision.observe(frame), .4)
+            self.assertEqual(action.kind, "attack")
+            brain.executed(action, .4, obs)
             frame[310:324, 280:344] = (190, 50, 10)
             obs = vision.observe(frame)
             self.assertIsNone(obs.player_feet)
             self.assertEqual(brain.decide(obs, 1).kind, "wait")
-            self.assertEqual(vision.confirmer.previous, [])
+            self.assertEqual(brain.decide(obs, 1.31).kind, "attack")
+            self.assertTrue(vision.confirmer.previous[0].confirmed)
 
     def test_hurt_pixels_recovered_locally_without_extending_strong_match_lifetime(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -192,8 +198,9 @@ class VisionTests(unittest.TestCase):
             frame[310:324, 280:350] = (190, 50, 10)
             frame[310:324, 286:350] = name
             self.assertEqual(vision.observe(frame, now=.2).player_feet, (318, 300))
-            self.assertIsNone(vision.observe(frame, now=.36).player_feet)
-            self.assertEqual(vision.strong, [])
+            obs = vision.observe(frame, now=.36)
+            self.assertIsNone(obs.player_feet)
+            self.assertTrue(obs.mobs[0].confirmed)  # 名牌丢失不再清空怪物识别。
 
     def test_resizing_requires_recalibration(self):
         with tempfile.TemporaryDirectory() as directory:
