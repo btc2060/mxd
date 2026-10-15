@@ -95,10 +95,15 @@ class Config:
 
     def require_calibration(self) -> None:
         self.validate()
-        required = (self.minimap_roi, self.combat_roi, self.frame_size,
-                    self.player_feet_offset, self.world_pixels_per_x)
-        if any(value is None for value in required):
-            raise ValueError("请先执行 python -m lionbot --calibrate 完成窗口、模板和比例校准")
+        required = {"小地图范围": self.minimap_roi, "主画面范围": self.combat_roi,
+                    "窗口尺寸": self.frame_size, "角色脚底位置": self.player_feet_offset}
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise ValueError("尚缺少" + "、".join(missing)
+                             + "；请运行 python -m lionbot --calibrate，已保存的步骤会自动续做")
+        if self.world_pixels_per_x is None:
+            raise ValueError("截图区域和角色位置已保存，但射程比例尚未完成；请先运行 "
+                             "python -m lionbot --measure-scale，再运行 --measure-teleport")
 
 
 def load_config(path: str | Path) -> Config:

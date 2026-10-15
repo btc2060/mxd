@@ -102,15 +102,22 @@ def main(argv=None) -> int:
     group.add_argument("--run", action="store_true", help="明确启用按键发送")
     group.add_argument("--observe", action="store_true", help="只观察（默认）")
     group.add_argument("--image", type=Path, help="离线检测一张客户区截图，不发送按键")
+    parser.add_argument("--restart-calibration", action="store_true", help="配合 --calibrate 重新校准，保留旧图和备份")
+    parser.add_argument("--reuse-templates", type=Path, help="配合 --calibrate 复用旧采样文件夹，补录丢失的脚底位置")
     parser.add_argument("--output", type=Path, default=Path("debug-output/detections.png"))
     args = parser.parse_args(argv)
+    if (args.restart_calibration or args.reuse_templates is not None) and not args.calibrate:
+        parser.error("--restart-calibration / --reuse-templates 只能与 --calibrate 一起使用")
     path = args.config.resolve()
     try:
         if args.calibrate or args.measure_scale or args.measure_teleport:
             from .calibrate import calibrate, measure_teleport, update_scale
 
-            function = calibrate if args.calibrate else update_scale if args.measure_scale else measure_teleport
-            function(path)
+            if args.calibrate:
+                calibrate(path, restart=args.restart_calibration, reuse_templates=args.reuse_templates)
+            else:
+                function = update_scale if args.measure_scale else measure_teleport
+                function(path)
             return 0
         config = load_config(path)
         config.require_calibration()
