@@ -1,0 +1,19 @@
+{
+  "window_title": "冒险岛怀旧服",
+  "minimap_roi": null,
+  "combat_roi": null,
+  "frame_size": null,
+  "player_template": "calibration/player.png",
+  "player_feet_offset": null,
+  "template_manifest": "calibration/monsters.json",
+  "world_pixels_per_x": null,
+  "bottom": {"y": 0.759, "left": 0.029, "right": 0.659},
+  "top": {"y": 0.130, "left": 0.045, "right": 0.212},
+  "attack_range": 0.086,
+  "attack_interval": 0.9,
+  "alt_interval": 190.0,
+  "teleport_max_dx": null,
+  "auto_route": true,
+  "ladder_x": 0.212,
+  "top_drop_x": 0.045
+}

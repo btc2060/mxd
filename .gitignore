@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+config.local.json
+config.local.json.*.bak
+calibration/
+debug-output/
