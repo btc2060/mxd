@@ -10,6 +10,18 @@ class Mob:
     feet: tuple[float, float]
     score: float = 1.0
     confirmed: bool = True
+    recovered: bool = False
+
+
+@dataclass
+class CombatTarget:
+    world_x: float
+    floor_y: float
+    direction: str
+    seen_at: float
+    acquired_at: float
+    shots: int = 0
+    shot_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -49,9 +61,9 @@ def target_status(mob: Mob, obs: Observation, config: Config) -> str:
 
 
 class Brain:
-    """只使用最新观测；按键执行与决策分开，便于测试时序和路线。"""
+    """实时观测加有界的两次施法；按键执行与决策分开。"""
 
-    def __init__(self, config: Config, mode: str = "auto"):
+    def __init__(self, config: Config, mode: str = "auto", start_alt: bool = True):
         self.c = config
         self.mode = mode
         self.floor: str | None = None
@@ -59,7 +71,14 @@ class Brain:
         self.direction = "right"
         self.busy_until = 0.0
         self.next_alt: float | None = None
+        self.startup_alt_pending = start_alt
         self.next_teleport = 0.0
+        self.movement_started = False
+        self.walked_since_teleport = 0.0
+        self.walk_position: float | None = None
+        self.last_combat_at = float("-inf")
+        self.target: CombatTarget | None = None
+        self.pending_since: float | None = None
         self.teleport_fault = False
         self.teleport_origin: float | None = None
         self.route = ""
@@ -84,6 +103,10 @@ class Brain:
         self.candidate_floor = None
         self.floor_frames = 0
         self.facing = ""
+        self.target = None
+        self.pending_since = None
+        self.walk_position = None
+        self.walked_since_teleport = 0.0
 
     def classify_floor(self, y: float) -> str | None:
         for name in ("bottom", "top"):
@@ -107,16 +130,28 @@ class Brain:
         self.last_scan_x = x
         self.move_origin = None
         self.direction = "left" if floor == "top" else "right"
+        self.target = None
 
     def decide(self, obs: Observation, now: float) -> Action:
         if not obs.focused or obs.position is None or obs.player_feet is None:
             self.reset_observation()
             self.last_mob_at = now
-            return Action("wait", reason="失焦或定位丢失，松开按键")
+            reason = ("游戏失焦" if not obs.focused else
+                      "小地图黄点丢失" if obs.position is None else "角色名牌丢失")
+            return Action("wait", reason=reason + "，松开按键")
         x, y = obs.position
         if self.next_alt is None:
             self.next_alt = now + self.c.alt_interval
+        if not self.movement_started:
+            self.next_teleport = now + max(12.0, self.c.teleport_cooldown)
+            self.movement_started = True
+        if self.walk_position is not None:
+            # 仅累计刚才步行产生的位移，瞬移和受击击退不能冒充步行。
+            self.walked_since_teleport += min(abs(x - self.walk_position), self.c.scan_step)
+            self.walk_position = None
         stable = self.stable_floor(y)
+        if self.target and stable is not None:
+            self.refresh_target(obs, now)
         if now < self.busy_until:
             return Action("wait", reason="等待施法/瞬移/跳跃结束，并重新截图")
         if self.teleport_origin is not None:
@@ -141,6 +176,8 @@ class Brain:
             return Action("wait", reason="坐标超出所配平台，检查小地图裁剪和边界")
         if self.floor != stable:
             self.enter_floor(stable, now, x)
+        if self.startup_alt_pending:
+            return Action("alt", reason="挂机开始，先按一次 Alt")
         if now >= self.next_alt:
             return Action("alt", reason="190 秒定时按键")
 
@@ -153,18 +190,11 @@ class Brain:
         scale = self.c.world_pixels_per_x
         if scale is None:
             return Action("wait", reason="缺少主画面/小地图距离校准")
-        in_range = [m for m in same_floor if target_status(m, obs, self.c) == "ready"]
-        if in_range:
-            left = [m for m in in_range if m.feet[0] < obs.player_feet[0]]
-            right = [m for m in in_range if m.feet[0] >= obs.player_feet[0]]
-            if len(left) == len(right):
-                direction = self.facing if self.facing in ("left", "right") else self.direction
-            else:
-                direction = "left" if len(left) > len(right) else "right"
+        combat = self.combat_action(obs, same_floor, now)
+        if combat is not None:
             self.move_origin = None
-            if self.facing != direction:
-                return Action("face", direction, "朝向射程内怪物；转身后重新确认")
-            return Action("attack", direction, "D 火焰箭；每次攻击后重新识别")
+            self.last_combat_at = now
+            return combat
 
         empty = now - self.last_mob_at >= self.c.empty_seconds
         if (self.mode == "auto" and self.c.auto_route and not self.route_disabled
@@ -203,16 +233,87 @@ class Brain:
             self.empty_legs += 1
         self.last_edge = edge
 
+    def mob_world_x(self, mob: Mob, obs: Observation) -> float:
+        return obs.position[0] + (mob.feet[0] - obs.player_feet[0]) / self.c.world_pixels_per_x
+
+    def refresh_target(self, obs: Observation, now: float) -> None:
+        target = self.target
+        if abs(obs.position[1] - target.floor_y) > self.c.floor_tolerance:
+            self.target = None
+            return
+        matches = [m for m in obs.mobs if
+                   abs(self.mob_world_x(m, obs) - target.world_x) * self.c.world_pixels_per_x <= 65]
+        nearest = min(matches, key=lambda m: (not within_attack_height(obs.player_feet, m.feet, self.c),
+                                              abs(self.mob_world_x(m, obs) - target.world_x)), default=None)
+        if nearest is not None and nearest.confirmed:
+            if target_status(nearest, obs, self.c) != "ready":
+                self.target = None
+            else:
+                target.world_x = self.mob_world_x(nearest, obs)
+                target.seen_at = now
+
+    def combat_action(self, obs: Observation, same_floor: list[Mob], now: float) -> Action | None:
+        ready = [m for m in same_floor if target_status(m, obs, self.c) == "ready"]
+        target = self.target
+        if target is not None:
+            dx = (target.world_x - obs.position[0]) * self.c.world_pixels_per_x
+            locked = [m for m in ready if abs(self.mob_world_x(m, obs) - target.world_x)
+                      * self.c.world_pixels_per_x <= 65]
+            visible = min(locked, key=lambda m: abs(self.mob_world_x(m, obs) - target.world_x), default=None)
+            if visible is not None and (target.shots < self.c.attack_burst_shots or not visible.recovered):
+                if target.shots >= self.c.attack_burst_shots:
+                    # 两次以后仍有正常姿态的当前检测，才开始新一组施法。
+                    target.shots = 0
+                    target.acquired_at = now
+                direction = target.direction if abs(dx) <= 12 else ("right" if dx > 0 else "left")
+                target.direction = direction
+                self.direction = direction
+                if self.facing != direction:
+                    return Action("face", direction, "保持目标朝向，转身后确认再攻击")
+                return Action("attack", direction, "D 火焰箭：当前目标已确认，间隔 0.9 秒")
+            reachable = abs(dx) <= self.c.attack_range * self.c.world_pixels_per_x
+            same_side = abs(dx) <= 12 or (dx > 0) == (target.direction == "right")
+            remembered = now - target.seen_at <= self.c.target_memory_seconds
+            if reachable and same_side and remembered:
+                if target.shots == 0 and now - target.acquired_at <= self.c.target_reacquire_seconds:
+                    return Action("wait", reason="转身后短暂停步重查目标")
+                if (0 < target.shots < self.c.attack_burst_shots and self.facing == target.direction
+                        and now - target.shot_at <= self.c.attack_interval + self.c.target_reacquire_seconds):
+                    return Action("attack", target.direction, "受击特效短暂漏检，衔接本组第二次攻击")
+            self.target = None
+
+        # 受击低阈值只延续原目标，不能独立触发新一组攻击。
+        fresh = [m for m in ready if not m.recovered]
+        if fresh:
+            same_side = [m for m in fresh if (m.feet[0] >= obs.player_feet[0]) == (self.facing == "right")]
+            mob = min(same_side or fresh, key=lambda m: abs(m.feet[0] - obs.player_feet[0]))
+            direction = "right" if mob.feet[0] >= obs.player_feet[0] else "left"
+            self.target = CombatTarget(self.mob_world_x(mob, obs), obs.position[1], direction, now, now)
+            self.direction = direction
+            self.pending_since = None
+            if self.facing != direction:
+                return Action("face", direction, "朝向射程内怪物，保持朝向确认")
+            return Action("attack", direction, "D 火焰箭：开始最多两次施法")
+        pending = any(not m.confirmed and abs(m.feet[0] - obs.player_feet[0])
+                      <= self.c.attack_range * self.c.world_pixels_per_x for m in same_floor)
+        if pending:
+            if self.pending_since is None:
+                self.pending_since = now
+            if now - self.pending_since <= .3:
+                return Action("wait", reason="射程内候选停步确认")
+        else:
+            self.pending_since = None
+        return None
+
     def travel(self, obs: Observation, direction: str, low: float, high: float, now: float) -> Action:
         x = obs.position[0]
         dx = self.c.teleport_max_dx
-        if dx is not None and not self.teleport_fault and now >= self.next_teleport:
+        if (dx is not None and not self.teleport_fault and now >= self.next_teleport
+                and not obs.mobs and now - self.last_combat_at >= 3
+                and self.walked_since_teleport >= max(3 * self.c.scan_step, 1.5 * self.c.attack_range)):
             projected = x + (dx if direction == "right" else -dx)
-            far_enough = all(abs(m.feet[0] - obs.player_feet[0]) / self.c.world_pixels_per_x
-                             > dx + 0.025 for m in obs.mobs
-                             if within_attack_height(obs.player_feet, m.feet, self.c))
-            if low + self.c.boundary_margin <= projected <= high - self.c.boundary_margin and far_enough:
-                return Action("teleport", direction, "方向键 + F，瞬移后重新定位")
+            if low + self.c.boundary_margin <= projected <= high - self.c.boundary_margin:
+                return Action("teleport", direction, "空场步行一段后偶尔瞬移，随后重新定位")
         reason = "瞬移位移超过安全上限，已停用 F，改用步行" if self.teleport_fault else "步行巡视"
         return Action("walk", direction, reason)
 
@@ -276,7 +377,12 @@ class Brain:
         kind = action.kind
         if kind == "attack":
             self.busy_until = pressed_at + self.c.attack_interval
+            if self.target is not None:
+                self.target.shots += 1
+                self.target.shot_at = pressed_at
+            self.last_combat_at = pressed_at
         elif kind == "alt":
+            self.startup_alt_pending = False
             self.next_alt = pressed_at + self.c.alt_interval
             self.busy_until = pressed_at + 0.20
         elif kind == "face":
@@ -287,7 +393,8 @@ class Brain:
         elif kind in ("teleport", "top_teleport"):
             self.facing = action.direction
             self.teleport_origin = obs.position[0]
-            self.next_teleport = pressed_at + self.c.teleport_cooldown
+            self.next_teleport = pressed_at + max(12.0, self.c.teleport_cooldown)
+            self.walked_since_teleport = 0.0
             self.busy_until = pressed_at + self.c.teleport_settle
             if kind == "top_teleport":
                 self.route = "top_settle"
@@ -304,6 +411,7 @@ class Brain:
             self.busy_until = pressed_at + 0.45
         if kind in ("walk", "teleport"):
             self.facing = action.direction
+            self.walk_position = obs.position[0] if kind == "walk" else None
             if self.move_origin is None:
                 self.move_origin = (obs.position[0], 0.0)
             old_x, commanded = self.move_origin

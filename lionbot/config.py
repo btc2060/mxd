@@ -37,7 +37,7 @@ class Config:
     attack_hold: float = 0.08
     alt_interval: float = 190.0
     teleport_max_dx: float | None = None
-    teleport_cooldown: float = 0.65
+    teleport_cooldown: float = 12.0
     teleport_settle: float = 0.35
     boundary_margin: float = 0.012
     scan_step: float = 0.05
@@ -46,6 +46,13 @@ class Config:
     empty_sweeps: int = 2
     feet_tolerance_px: float = 22.0
     confirmation_frames: int = 2
+    confirmation_gap: float = 0.35
+    hurt_recovery_seconds: float = 1.2
+    hurt_threshold: float = 0.72
+    target_memory_seconds: float = 1.45
+    target_reacquire_seconds: float = 0.4
+    attack_burst_shots: int = 2
+    player_partial_seconds: float = 0.35
     player_threshold: float = 0.82
     monster_threshold: float = 0.82
     edge_threshold: float = 0.40
@@ -81,6 +88,16 @@ class Config:
             raise ValueError("瞬移最大位移必须在 (0, 1) 内")
         if self.confirmation_frames < 2 or self.empty_sweeps < 1:
             raise ValueError("至少连续两帧确认怪物，至少巡视一个往返")
+        if not 0 < self.hurt_threshold <= self.monster_threshold <= 1:
+            raise ValueError("受击追踪阈值必须不高于正常识别阈值，且位于 (0, 1]")
+        if not 0 < self.confirmation_gap <= self.hurt_recovery_seconds <= 2:
+            raise ValueError("识别间断和受击追踪时间必须满足 0 < gap <= recovery <= 2 秒")
+        if not 1 <= self.attack_burst_shots <= 2:
+            raise ValueError("一次目标确认最多衔接两次攻击")
+        if not 0 < self.target_reacquire_seconds < self.target_memory_seconds <= 2:
+            raise ValueError("目标重查时间必须小于记忆时间，记忆最长 2 秒")
+        if not 0 < self.player_partial_seconds <= 0.5:
+            raise ValueError("局部名牌识别最长 0.5 秒")
         if not 0 <= self.turn_inset <= self.attack_range - self.boundary_margin:
             raise ValueError("掉头点必须在边缘攻击范围内，并留出余量")
         if self.auto_route:

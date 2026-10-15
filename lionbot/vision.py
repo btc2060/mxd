@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -61,6 +62,7 @@ class Detection:
     score: float
     confirmed: bool = False
     hits: int = 1
+    recovered: bool = False
 
 
 @dataclass(frozen=True)
@@ -153,27 +155,38 @@ def detect_monsters(frame: np.ndarray, roi, templates: list[Template],
 
 
 class Confirmer:
-    """只输出当前帧命中的检测；不会拿暂时丢失的旧怪物触发攻击。"""
+    """只输出当前帧命中；短暂漏检保留确认历史，不生成幽灵检测。"""
 
-    def __init__(self, frames: int = 2):
+    def __init__(self, frames: int = 2, gap: float = .35):
         self.frames = frames
+        self.gap = gap
         self.previous: list[Detection] = []
+        self.history: list[tuple[Detection, float]] = []
 
-    def update(self, found: list[Detection]) -> list[Detection]:
+    def update(self, found: list[Detection], now: float | None = None, shift=(0, 0)) -> list[Detection]:
+        now = time.monotonic() if now is None else now
         result = []
-        available = list(self.previous)
+        available = [(shift_detection(d, *shift), at) for d, at in self.history if now - at <= self.gap]
         for item in found:
-            nearest = min(available, key=lambda p: np.hypot(p.feet[0] - item.feet[0], p.feet[1] - item.feet[1]), default=None)
+            nearest = min(available, key=lambda p: np.hypot(p[0].feet[0] - item.feet[0], p[0].feet[1] - item.feet[1]), default=None)
             hits = 1
-            if nearest is not None and np.hypot(nearest.feet[0] - item.feet[0], nearest.feet[1] - item.feet[1]) <= 35:
-                hits = nearest.hits + 1
+            if nearest is not None and np.hypot(nearest[0].feet[0] - item.feet[0], nearest[0].feet[1] - item.feet[1]) <= 35:
+                hits = nearest[0].hits + 1
                 available.remove(nearest)
-            result.append(replace(item, hits=hits, confirmed=hits >= self.frames))
+            result.append(replace(item, hits=hits, confirmed=item.confirmed or hits >= self.frames))
         self.previous = result
+        self.history = available + [(d, now) for d in result]
         return result
 
     def reset(self) -> None:
         self.previous = []
+        self.history = []
+
+
+def shift_detection(d: Detection, dx: float, dy: float) -> Detection:
+    x, y, w, h = d.box
+    return replace(d, box=(round(x + dx), round(y + dy), w, h),
+                   feet=(d.feet[0] + dx, d.feet[1] + dy))
 
 
 def locate_player(frame: np.ndarray, roi, template: np.ndarray, feet_offset,
@@ -192,30 +205,120 @@ def locate_player(frame: np.ndarray, roi, template: np.ndarray, feet_offset,
     return feet
 
 
+class PlayerLocator:
+    """完整名牌优先；短时遮挡时要求当前画面中两段文字一致命中。"""
+
+    def __init__(self, config: Config, template: np.ndarray):
+        self.c, self.template = config, template
+        self.feet = None
+        self.full_at = float("-inf")
+
+    def locate(self, frame: np.ndarray, now: float):
+        feet = locate_player(frame, self.c.combat_roi, self.template,
+                             self.c.player_feet_offset, self.c.player_threshold)
+        if feet is not None:
+            self.feet, self.full_at = feet, now
+            return feet
+        if self.feet is None or now - self.full_at > self.c.player_partial_seconds:
+            return None
+        rx, ry, rw, rh = self.c.combat_roi
+        ox, oy = self.c.player_feet_offset
+        h, w = self.template.shape[:2]
+        last_x, last_y = self.feet[0] - ox, self.feet[1] - oy
+        x, y = max(rx, round(last_x - 40)), max(ry, round(last_y - 25))
+        right, bottom = min(rx + rw, round(last_x + w + 40)), min(ry + rh, round(last_y + h + 25))
+        gray = cv2.cvtColor(frame[y:bottom, x:right], cv2.COLOR_BGR2GRAY)
+        target = cv2.cvtColor(self.template, cv2.COLOR_BGR2GRAY)
+        origins = []
+        for index in range(3):
+            a, b = index * w // 3, (index + 1) * w // 3
+            part = target[:, a:b]
+            if part.size == 0 or part.std() < 5 or part.shape[0] > gray.shape[0] or part.shape[1] > gray.shape[1]:
+                continue
+            _, score, _, (px, py) = cv2.minMaxLoc(cv2.matchTemplate(gray, part, cv2.TM_CCOEFF_NORMED))
+            if score >= self.c.player_threshold:
+                origins.append((x + px - a, y + py))
+        for a in origins:
+            agrees = [b for b in origins if abs(a[0] - b[0]) <= 3 and abs(a[1] - b[1]) <= 3]
+            if len(agrees) >= 2:
+                feet = (float(np.mean([b[0] for b in agrees])) + ox,
+                        float(np.mean([b[1] for b in agrees])) + oy)
+                if 0 <= feet[0] < frame.shape[1] and 0 <= feet[1] < frame.shape[0]:
+                    self.feet = feet
+                    return feet
+        return None
+
+
 class Vision:
     def __init__(self, config: Config, root: Path):
         self.c = config
         self.player_template = read_image(root / config.player_template)
         self.templates = load_templates(root / config.template_manifest)
-        self.confirmer = Confirmer(config.confirmation_frames)
+        self.locator = PlayerLocator(config, self.player_template)
+        self.confirmer = Confirmer(config.confirmation_frames, config.confirmation_gap)
         self.detections: list[Detection] = []
+        self.strong: list[tuple[Detection, float]] = []
+        self.previous: Observation | None = None
 
-    def observe(self, frame: np.ndarray, focused: bool = True) -> Observation:
+    def reset(self) -> None:
+        self.confirmer.reset()
+        self.detections = []
+        self.strong = []
+        self.previous = None
+        self.locator.feet = None
+        self.locator.full_at = float("-inf")
+
+    def observe(self, frame: np.ndarray, focused: bool = True, now: float | None = None) -> Observation:
+        now = time.monotonic() if now is None else now
         if tuple(frame.shape[1::-1]) != self.c.frame_size:
             raise ValueError("客户区分辨率已改变，请恢复原尺寸或重新校准")
         position = minimap_position(frame, self.c.minimap_roi)
-        player = locate_player(frame, self.c.combat_roi, self.player_template,
-                               self.c.player_feet_offset, self.c.player_threshold)
+        player = self.locator.locate(frame, now)
         if not focused or position is None or player is None:
-            self.confirmer.reset()
-            self.detections = []
+            self.reset()
             return Observation(position, player, focused=focused)
+        shift = (0.0, 0.0)
+        if self.previous is not None:
+            if abs(position[1] - self.previous.position[1]) > self.c.floor_tolerance:
+                self.confirmer.reset()
+                self.strong = []
+            else:
+                # 世界坐标来自小地图，剩余的主画面位移是镜头滚动。
+                shift = (player[0] - self.previous.player_feet[0]
+                         - (position[0] - self.previous.position[0]) * self.c.world_pixels_per_x,
+                         player[1] - self.previous.player_feet[1])
+        self.strong = [(shift_detection(d, *shift), at) for d, at in self.strong
+                       if now - at <= self.c.hurt_recovery_seconds]
         found = detect_monsters(frame, self.c.combat_roi, self.templates,
                                 self.c.monster_threshold, self.c.edge_threshold,
                                 excluded_roi=self.c.minimap_roi)
-        self.detections = self.confirmer.update(found)
-        mobs = tuple(Mob(d.feet, d.score, d.confirmed) for d in self.detections)
-        return Observation(position, player, mobs, focused)
+        # 低阈值只在已确认怪物附近使用；受击匹配不延长正常姿态的有效期。
+        rx, ry, rw, rh = self.c.combat_roi
+        for seed, _ in self.strong:
+            if any(np.hypot(seed.feet[0] - d.feet[0], seed.feet[1] - d.feet[1]) <= 35 for d in found):
+                continue
+            sx, sy, sw, sh = seed.box
+            x, y = max(rx, sx - 35), max(ry, sy - 25)
+            right, bottom = min(rx + rw, sx + sw + 35), min(ry + rh, sy + sh + 25)
+            if right <= x or bottom <= y:
+                continue
+            local = detect_monsters(frame, (x, y, right - x, bottom - y), self.templates,
+                                    self.c.hurt_threshold, min(.30, self.c.edge_threshold),
+                                    excluded_roi=self.c.minimap_roi)
+            local = [d for d in local if np.hypot(seed.feet[0] - d.feet[0], seed.feet[1] - d.feet[1]) <= 45]
+            if local:
+                best = max(local, key=lambda d: d.score)
+                found.append(replace(best, recovered=True, confirmed=True))
+        self.detections = self.confirmer.update(suppress_duplicates(found), now, shift)
+        for d in self.detections:
+            if d.confirmed and not d.recovered:
+                self.strong = [(old, at) for old, at in self.strong
+                               if np.hypot(old.feet[0] - d.feet[0], old.feet[1] - d.feet[1]) > 35]
+                self.strong.append((d, now))
+        mobs = tuple(Mob(d.feet, d.score, d.confirmed, d.recovered) for d in self.detections)
+        obs = Observation(position, player, mobs, focused)
+        self.previous = obs
+        return obs
 
     def draw(self, frame: np.ndarray, obs: Observation, status: str) -> np.ndarray:
         output = frame.copy()
@@ -226,7 +329,9 @@ class Vision:
             cv2.rectangle(output, (x, y), (x + w, y + h), color, 1)
             cv2.circle(output, tuple(map(int, d.feet)), 3, color, -1)
             dy = f" dY={d.feet[1] - obs.player_feet[1]:+.0f}" if obs.player_feet else ""
-            cv2.putText(output, f"{state.upper()}{dy} {d.score:.2f}", (x, y - 4), 0, .4, color, 1)
+            dx = f" dX={d.feet[0] - obs.player_feet[0]:+.0f}" if obs.player_feet else ""
+            cv2.putText(output, f"{state.upper()}{'~' if d.recovered else ''}{dx}{dy} {d.score:.2f}",
+                        (x, y - 4), 0, .4, color, 1)
         if obs.player_feet:
             x, y = map(int, obs.player_feet)
             reach = round(self.c.attack_range * self.c.world_pixels_per_x)

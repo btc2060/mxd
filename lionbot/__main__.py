@@ -26,12 +26,28 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
     stopped, paused = threading.Event(), threading.Event()
     executor = None
     listener = None
+    guard = None
+    preview_open = False
+    preview_title = "Blue lion detector / F8 pause / F12 exit"
+
+    def preview_events():
+        if preview_open:
+            try:
+                if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+                    stopped.set()
+                if cv2.getWindowProperty(preview_title, cv2.WND_PROP_VISIBLE) < 1:
+                    stopped.set()
+            except cv2.error:
+                # Windows 上关闭预览后，窗口属性查询可能直接抛错。
+                stopped.set()
+
     try:
         vision = Vision(config, root)
-        brain = Brain(config, mode)
+        brain = Brain(config, mode, start_alt=run)
         if run:
             executor = InputExecutor(Keyboard(), config,
                                      active=lambda: window.focused() and not paused.is_set() and not stopped.is_set())
+            guard = executor.start_guard(stopped)
 
         def on_press(key):
             if key == Key.f12:
@@ -49,6 +65,10 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
         print("运行模式：" + ("发送按键" if run else "仅观察，不发送按键"))
         print("F8 暂停/恢复，F12 退出。请将游戏置于前台；失焦立即停止输入。")
         print("所有坐标基于已校准的小地图；不处理第二个台阶或中间层。")
+        print(f"攻击距离 X={config.attack_range:.4f}，约 {config.attack_range * config.world_pixels_per_x:.0f}px；"
+              f"间隔 {config.attack_interval:.1f}s。步行为主，巡逻瞬移至少间隔 {max(12, config.teleport_cooldown):.0f}s。")
+        if run:
+            print("有效定位后先按一次 Alt，之后每 190 秒按一次；暂停/失焦后恢复不重复首按。")
         previous_status = ""
         last_log = 0.0
         while not stopped.is_set():
@@ -56,9 +76,13 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
             if paused.is_set() or not window.focused():
                 if executor:
                     executor.stop()
-                vision.confirmer.reset()
+                vision.reset()
                 brain.reset_observation()
                 brain.last_mob_at = loop_start
+                if loop_start - last_log >= 2:
+                    print("已暂停，按 F8 恢复。" if paused.is_set() else "游戏失焦：已松键，请点回游戏。")
+                    last_log = loop_start
+                preview_events()
                 time.sleep(.05)
                 continue
             frame = window.capture()
@@ -68,7 +92,8 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
             ready = sum(target_status(m, obs, config) == "ready" for m in obs.mobs)
             height = sum(target_status(m, obs, config) == "height" for m in obs.mobs)
             status = (f"pos={position} floor={brain.floor} mobs={sum(m.confirmed for m in obs.mobs)}/{len(obs.mobs)} "
-                      f"ready={ready} height={height} {action.kind}:{action.direction}")
+                      f"ready={ready} height={height} recovered={sum(m.recovered for m in obs.mobs)} "
+                      f"{action.kind}:{action.direction}")
             if action.reason != previous_status or loop_start - last_log >= 2:
                 print(f"{status} | {action.reason}")
                 previous_status, last_log = action.reason, loop_start
@@ -78,16 +103,22 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
                     brain.executed(action, pressed_at, obs)
                 except InputCancelled:
                     brain.reset_observation()
-                    vision.confirmer.reset()
+                    vision.reset()
             # 观察模式不伪造攻击/瞬移反馈，因此不会将未发出的按键算作成功。
             if show:
-                cv2.imshow("Blue lion detector / F8 pause / F12 exit", vision.draw(frame, obs, status))
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    stopped.set()
+                if not preview_open:
+                    cv2.namedWindow(preview_title, cv2.WINDOW_NORMAL)
+                    cv2.resizeWindow(preview_title, 640, round(frame.shape[0] * 640 / frame.shape[1]))
+                    preview_open = True
+                cv2.imshow(preview_title, vision.draw(frame, obs, status))
+                preview_events()
             time.sleep(max(.001, 1 / 15 - (time.monotonic() - loop_start)))
     finally:
+        stopped.set()
         if executor:
             executor.stop()
+        if guard:
+            guard.join(timeout=.5)
         if listener:
             listener.stop()
         window.close()

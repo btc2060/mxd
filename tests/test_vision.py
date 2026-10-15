@@ -89,13 +89,21 @@ class VisionTests(unittest.TestCase):
                                 excluded_roi=(0, 0, 42, 44))
         self.assertEqual(found, [])
 
-    def test_confirmation_is_consecutive_and_never_emits_missing_target(self):
+    def test_confirmation_survives_short_gap_but_never_emits_missing_target(self):
         confirmer = Confirmer(2)
         detection = Detection((20, 20, 40, 40), (40, 60), .95)
-        self.assertFalse(confirmer.update([detection])[0].confirmed)
-        self.assertTrue(confirmer.update([detection])[0].confirmed)
-        self.assertEqual(confirmer.update([]), [])
-        self.assertFalse(confirmer.update([detection])[0].confirmed)
+        self.assertFalse(confirmer.update([detection], 0)[0].confirmed)
+        self.assertTrue(confirmer.update([detection], .1)[0].confirmed)
+        self.assertEqual(confirmer.update([], .2), [])
+        self.assertTrue(confirmer.update([detection], .3)[0].confirmed)
+        self.assertFalse(confirmer.update([detection], 1)[0].confirmed)
+
+    def test_confirmation_compensates_camera_motion(self):
+        confirmer = Confirmer(2)
+        detection = Detection((100, 20, 40, 40), (120, 60), .95)
+        confirmer.update([detection], 0)
+        shifted = replace(detection, box=(40, 20, 40, 40), feet=(60, 60))
+        self.assertTrue(confirmer.update([shifted], .1, shift=(-60, 0))[0].confirmed)
 
     def test_map_scale_compensates_camera_scroll(self):
         rng = np.random.default_rng(12)
@@ -114,7 +122,7 @@ class VisionTests(unittest.TestCase):
     def test_real_pipeline_from_pixels_to_attack_and_missing_nameplate(self):
         with tempfile.TemporaryDirectory() as directory:
             frame, config = fixture(Path(directory))
-            vision, brain = Vision(config, Path(directory)), Brain(config)
+            vision, brain = Vision(config, Path(directory)), Brain(config, start_alt=False)
             for now in (0, .1, .2):
                 obs = vision.observe(frame)
                 action = brain.decide(obs, now)
@@ -129,6 +137,63 @@ class VisionTests(unittest.TestCase):
             self.assertIsNone(obs.player_feet)
             self.assertEqual(brain.decide(obs, 1).kind, "wait")
             self.assertEqual(vision.confirmer.previous, [])
+
+    def test_hurt_pixels_recovered_locally_without_extending_strong_match_lifetime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            frame, config = fixture(Path(directory))
+            vision = Vision(config, Path(directory))
+            vision.observe(frame, now=0)
+            self.assertTrue(vision.observe(frame, now=.1).mobs[0].confirmed)
+            hurt = frame.copy()
+            cv2.line(hurt, (414, 276), (455, 290), (255, 220, 180), 5)
+            self.assertEqual(detect_monsters(hurt, config.combat_roi, vision.templates,
+                                            excluded_roi=config.minimap_roi), [])
+            recovered = vision.observe(hurt, now=.5)
+            self.assertEqual(len(recovered.mobs), 1)
+            self.assertTrue(recovered.mobs[0].recovered)
+            self.assertTrue(recovered.mobs[0].confirmed)
+            self.assertTrue(vision.observe(hurt, now=1.1).mobs[0].recovered)
+            self.assertEqual(vision.observe(hurt, now=1.4).mobs, ())
+            self.assertEqual(Vision(config, Path(directory)).observe(hurt, now=0).mobs, ())
+
+    def test_recovery_does_not_substitute_golden_pet_for_missing_lion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            frame, config = fixture(Path(directory))
+            vision = Vision(config, Path(directory))
+            vision.observe(frame, now=0)
+            vision.observe(frame, now=.1)
+            frame[260:304, 414:456] = sprite(golden=True)
+            self.assertEqual(vision.observe(frame, now=.5).mobs, ())
+
+    def test_camera_scroll_moves_local_hurt_search_with_world(self):
+        with tempfile.TemporaryDirectory() as directory:
+            frame, config = fixture(Path(directory))
+            vision = Vision(config, Path(directory))
+            vision.observe(frame, now=0)
+            vision.observe(frame, now=.1)
+            frame[260:304, 330:456] = (190, 50, 10)
+            hurt = sprite()
+            cv2.line(hurt, (0, 16), (41, 30), (255, 220, 180), 5)
+            frame[260:304, 357:399] = hurt
+            frame[55:60, 44:49] = (30, 30, 30)
+            cv2.rectangle(frame, (48, 55), (52, 59), (0, 255, 255), -1)
+            obs = vision.observe(frame, now=.3)
+            self.assertEqual(len(obs.mobs), 1)
+            self.assertEqual(obs.mobs[0].feet, (378, 300))
+            self.assertTrue(obs.mobs[0].recovered)
+
+    def test_partial_nameplate_requires_current_text_and_expires_from_full_match(self):
+        with tempfile.TemporaryDirectory() as directory:
+            frame, config = fixture(Path(directory))
+            vision = Vision(config, Path(directory))
+            self.assertEqual(vision.observe(frame, now=0).player_feet, (312, 300))
+            name = frame[310:324, 280:344].copy()
+            name[:, 42:] = (190, 50, 10)
+            frame[310:324, 280:350] = (190, 50, 10)
+            frame[310:324, 286:350] = name
+            self.assertEqual(vision.observe(frame, now=.2).player_feet, (318, 300))
+            self.assertIsNone(vision.observe(frame, now=.36).player_feet)
+            self.assertEqual(vision.strong, [])
 
     def test_resizing_requires_recalibration(self):
         with tempfile.TemporaryDirectory() as directory:

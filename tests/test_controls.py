@@ -1,3 +1,4 @@
+import threading
 import unittest
 
 from lionbot.brain import Action
@@ -50,6 +51,62 @@ class ControlTests(unittest.TestCase):
         press_d = next(e for e in self.keyboard.events if e[:2] == ("press", "d"))
         self.assertEqual(press_d[2], set())
         self.assertEqual(self.keyboard.held, set())
+
+    def test_consecutive_walks_hold_direction_and_scan_releases_it(self):
+        for _ in range(3):
+            self.executor.execute(Action("walk", "right"))
+        self.assertEqual(self.keyboard.held, {"right"})
+        self.assertEqual([e[:2] for e in self.keyboard.events], [("press", "right")])
+        self.executor.execute(Action("scan"))
+        self.assertEqual(self.keyboard.held, set())
+
+    def test_turn_releases_old_direction_before_pressing_new_one(self):
+        self.executor.execute(Action("walk", "right"))
+        self.executor.execute(Action("walk", "left"))
+        presses = [e for e in self.keyboard.events if e[0] == "press"]
+        self.assertEqual(presses[-1][2], set())
+        self.assertEqual(self.keyboard.held, {"left"})
+        self.executor.stop()
+
+    def test_guard_stops_continuous_walk_on_focus_loss_or_slow_frame(self):
+        self.executor.execute(Action("walk", "left"))
+        self.executor.active = lambda: False
+        self.executor.guard_once()
+        self.assertEqual(self.keyboard.held, set())
+        self.executor.active = lambda: True
+        self.executor.execute(Action("walk", "right"))
+        self.clock.sleep(.251)
+        self.executor.guard_once()
+        self.assertEqual(self.keyboard.held, set())
+
+    def test_failed_walk_does_not_leave_held_direction(self):
+        self.executor.active = lambda: self.clock.now < .03
+        with self.assertRaises(InputCancelled):
+            self.executor.execute(Action("walk", "right"))
+        self.assertEqual(self.keyboard.held, set())
+
+    def test_background_guard_releases_walk_between_frames(self):
+        active, stopped, released = threading.Event(), threading.Event(), threading.Event()
+        active.set()
+        self.executor.active = active.is_set
+        real_release = self.keyboard.release
+
+        def release(key):
+            real_release(key)
+            released.set()
+
+        self.keyboard.release = release
+        guard = self.executor.start_guard(stopped)
+        try:
+            self.executor.execute(Action("walk", "left"))
+            active.clear()
+            self.assertTrue(released.wait(1), "守卫未在帧处理间隙释放方向键")
+            self.assertEqual(self.keyboard.held, set())
+        finally:
+            stopped.set()
+            guard.join(timeout=1)
+            self.executor.stop()
+        self.assertFalse(guard.is_alive())
 
     def test_grab_is_up_and_space_and_exit_is_only_space(self):
         self.executor.execute(Action("grab", "up"))

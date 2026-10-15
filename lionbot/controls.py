@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import threading
 
 from .brain import Action
 from .config import Config
@@ -11,7 +12,7 @@ class InputCancelled(Exception):
 
 
 class InputExecutor:
-    """短动作执行器。暂停/失焦在每次按键前和等待中检查，finally 松开所有键。"""
+    """连续步行保持方向；其他动作松键执行，后台守卫处理失焦和超时。"""
 
     def __init__(self, keyboard, config: Config, active=lambda: True,
                  clock=time.monotonic, sleep=time.sleep):
@@ -21,26 +22,53 @@ class InputExecutor:
         self.clock = clock
         self.sleep = sleep
         self.held: set[str] = set()
+        self.lock = threading.RLock()
+        self.hold_deadline: float | None = None
 
     def check(self) -> None:
         if not self.active():
             raise InputCancelled("游戏失焦、暂停或退出")
 
     def press(self, key: str) -> float:
-        self.check()
-        self.held.add(key)
-        self.keyboard.press(key)
-        return self.clock()
+        with self.lock:
+            self.check()
+            if key not in self.held:
+                self.held.add(key)
+                self.keyboard.press(key)
+            return self.clock()
 
     def release(self, key: str) -> None:
-        try:
-            self.keyboard.release(key)
-        finally:
-            self.held.discard(key)
+        with self.lock:
+            try:
+                self.keyboard.release(key)
+            finally:
+                self.held.discard(key)
 
     def stop(self) -> None:
-        for key in tuple(self.held):
-            self.release(key)
+        with self.lock:
+            self.hold_deadline = None
+            first_error = None
+            for key in tuple(self.held):
+                try:
+                    self.release(key)
+                except Exception as error:
+                    first_error = first_error or error
+            if first_error is not None:
+                raise first_error
+
+    def guard_once(self) -> None:
+        with self.lock:
+            if self.held and (not self.active() or (self.hold_deadline is not None
+                                                  and self.clock() >= self.hold_deadline)):
+                self.stop()
+
+    def start_guard(self, stopped: threading.Event) -> threading.Thread:
+        def watch():
+            while not stopped.wait(.02):
+                self.guard_once()
+        thread = threading.Thread(target=watch, name="input-guard", daemon=True)
+        thread.start()
+        return thread
 
     def delay(self, seconds: float) -> None:
         end = self.clock() + seconds
@@ -49,7 +77,9 @@ class InputExecutor:
             self.sleep(max(0.0, min(0.01, end - self.clock())))
 
     def execute(self, action: Action) -> float:
-        self.stop()
+        if action.kind != "walk" or self.held != {action.direction}:
+            self.stop()
+        keep_walking = False
         pressed_at = self.clock()
         try:
             self.check()
@@ -83,6 +113,12 @@ class InputExecutor:
                 self.delay(0.08)
             elif action.kind not in ("wait", "scan"):
                 raise ValueError(f"未知动作：{action.kind}")
+            if action.kind == "walk":
+                self.check()
+                with self.lock:
+                    self.hold_deadline = self.clock() + .25
+                keep_walking = True
             return pressed_at
         finally:
-            self.stop()
+            if not keep_walking:
+                self.stop()
