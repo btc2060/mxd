@@ -134,14 +134,95 @@ def get_position(frame, config: Config):
     return position
 
 
+def print_position(label: str, position, config: Config) -> None:
+    print(f"{label}：X={position[0]:.4f}，Y={position[1]:.4f}；"
+          f"底层设定 Y={config.bottom.y:.4f} ± {config.floor_tolerance:.4f}；"
+          f"小地图范围={config.minimap_roi}")
+
+
+def require_bottom(position, config: Config, label: str) -> None:
+    low = config.bottom.y - config.floor_tolerance
+    high = config.bottom.y + config.floor_tolerance
+    if not low - 1e-9 <= position[1] <= high + 1e-9:
+        raise ValueError(
+            f"{label}未通过底层坐标校验：实测 X={position[0]:.4f}、Y={position[1]:.4f}，"
+            f"配置要求 Y={config.bottom.y:.4f}（允许 {low:.4f}～{high:.4f}），"
+            f"小地图范围={config.minimap_roi}。若已在底层站稳，请运行 "
+            "python -m lionbot --check-position，确认红圈标记的是角色黄点，"
+            "并核对小地图框选范围是否与原地图坐标一致。仅更换裁剪范围会同时改变 X、Y，"
+            "不能只修改底层 Y 而继续沿用原梯子和边界坐标。")
+
+
+def position_preview(frame, config: Config):
+    """只放大显示原 ROI，坐标计算仍使用原图；红圈标示实际识别对象。"""
+    if config.frame_size is not None and tuple(frame.shape[1::-1]) != config.frame_size:
+        raise ValueError("客户区大小已改变，请恢复原尺寸再查看坐标")
+    minimap = crop(frame, config.minimap_roi)
+    position = minimap_position(frame, config.minimap_roi)
+    h, w = minimap.shape[:2]
+    zoom = min(4, 600 / w, 400 / h)
+    enlarged = cv2.resize(minimap, (max(1, round(w * zoom)), max(1, round(h * zoom))), interpolation=cv2.INTER_NEAREST)
+    if position is not None:
+        center = (round(position[0] * enlarged.shape[1]), round(position[1] * enlarged.shape[0]))
+        cv2.circle(enlarged, center, 8, (0, 0, 255), 2)
+    panel = np.full((enlarged.shape[0] + 135, 620, 3), 32, dtype=np.uint8)
+    panel[:enlarged.shape[0], :enlarged.shape[1]] = enlarged
+    if position is None:
+        status = "No UNIQUE yellow dot. Check minimap selection."
+    else:
+        floor = "bottom" if abs(position[1] - config.bottom.y) <= config.floor_tolerance else (
+            "top" if abs(position[1] - config.top.y) <= config.floor_tolerance else "unclassified")
+        status = f"X={position[0]:.4f}  Y={position[1]:.4f}  floor={floor}"
+    lines = [status, f"Expected bottom Y={config.bottom.y:.4f} +/- {config.floor_tolerance:.4f}",
+             f"ROI [x,y,w,h]={config.minimap_roi}",
+             "Read-only. Keep beside game. Q / Esc: close."]
+    for index, line in enumerate(lines):
+        cv2.putText(panel, line, (10, enlarged.shape[0] + 25 + index * 28), 0, .46, (230, 230, 230), 1)
+    return panel, position
+
+
+def check_position(config: Config) -> None:
+    """诊断不要求怪物模板或射程比例，不发送按键或修改配置。"""
+    if config.minimap_roi is None:
+        raise ValueError("尚未保存小地图范围，请先运行 --calibrate 框选小地图")
+    window = GameWindow(config.window_title)
+    title = "Minimap position / READ ONLY / Q to close"
+    last_log = 0.0
+    try:
+        print("实时查看 X/Y，不发送按键。请把预览放到游戏旁边，避免遮挡原小地图。")
+        cv2.namedWindow(title, cv2.WINDOW_AUTOSIZE)
+        while True:
+            frame = window.capture()
+            panel, position = position_preview(frame, config)
+            now = time.monotonic()
+            if now - last_log >= .5:
+                if position is not None:
+                    print_position("实时黄点", position, config)
+                else:
+                    print("当前未识别到唯一黄点，请检查预览中的裁剪范围")
+                last_log = now
+            cv2.imshow(title, panel)
+            if cv2.waitKey(20) & 0xFF in (ord("q"), ord("Q"), 27):
+                break
+            if cv2.getWindowProperty(title, cv2.WND_PROP_VISIBLE) < 1:
+                break
+            time.sleep(.08)
+    finally:
+        window.close()
+        cv2.destroyAllWindows()
+
+
 def measure_scale(window: GameWindow, config: Config) -> Config:
     first = fresh(window, "在底层平地站定，开始测量攻击距离的坐标比例。")
     first_pos = get_position(first, config)
+    print_position("步行测量起点", first_pos, config)
     first_feet = select_point("Click YOUR character feet / Esc cancels", first)
     print("框选一块包含固定地形的宽区域，不含小地图、UI，尽量避开怪物和角色。")
     background_roi = select_roi("Static terrain for camera compensation", first)
     second = fresh(window, "手动沿一个方向走一小段（小地图 X 改变至少 0.025），站定；不要换层。")
     second_pos = get_position(second, config)
+    print_position("步行测量终点", second_pos, config)
+    print(f"步行实测 ΔX={second_pos[0] - first_pos[0]:.4f}，ΔY={second_pos[1] - first_pos[1]:.4f}")
     second_feet = select_point("Click YOUR character feet in SECOND frame", second)
     scale, quality = measure_world_scale(first, second, background_roi,
                                           first_pos, second_pos, first_feet, second_feet)
@@ -299,12 +380,15 @@ def measure_teleport(path: Path) -> None:
         for trial in range(3):
             first = fresh(window, f"瞬移测量 {trial + 1}/3：在底层中间无遮挡平地站定，远离梯子和边界。")
             before = get_position(first, config)
+            print_position(f"瞬移测量 {trial + 1}/3 起点", before, config)
+            require_bottom(before, config, "瞬移起点")
             second = fresh(window, "手动按住左或右方向，短按一次 F 后松开全部键；不要连续瞬移。")
             after = get_position(second, config)
+            print_position(f"瞬移测量 {trial + 1}/3 终点", after, config)
+            require_bottom(after, config, "瞬移终点")
+            print(f"瞬移实测 ΔX={after[0] - before[0]:.4f}，ΔY={after[1] - before[1]:.4f}")
             if abs(after[1] - before[1]) > 0.02 or abs(after[0] - before[0]) < 0.005:
                 raise ValueError("未测到有效的同层瞬移，请在无遮挡平地重新测量")
-            if abs(before[1] - config.bottom.y) > config.floor_tolerance:
-                raise ValueError("瞬移位移请在底层测量")
             distances.append(abs(after[0] - before[0]))
         upper_bound = max(distances) * 1.25 + 2 / config.minimap_roi[2]
         config = replace(config, teleport_max_dx=upper_bound)

@@ -3,13 +3,15 @@ import json
 import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stdout
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import patch
 
 import cv2
 
-from lionbot.calibrate import calibrate, sample_choice, save_json
+from lionbot.calibrate import (calibrate, check_position, measure_teleport,
+                               position_preview, require_bottom, sample_choice, save_json)
+from lionbot.__main__ import main
 from lionbot.config import load_config
 from tests.test_vision import fixture
 
@@ -157,6 +159,92 @@ class CalibrationPersistenceTests(unittest.TestCase):
                 save_json(target, {"step": "new"})
         self.assertEqual(json.loads(target.read_text(encoding="utf-8")), original)
         self.assertEqual(list(self.root.glob("*.tmp")), [])
+
+
+class PositionDiagnosticsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.frame, self.config = fixture(self.root)
+        self.path = self.root / "config.local.json"
+        save_json(self.path, asdict(self.config))
+        self.patches = ExitStack()
+        self.patches.enter_context(redirect_stdout(io.StringIO()))
+        self.window = self.patches.enter_context(patch("lionbot.calibrate.GameWindow"))
+        self.capture = self.patches.enter_context(patch("lionbot.calibrate.fresh"))
+        self.patches.enter_context(patch("lionbot.calibrate.cv2.destroyAllWindows"))
+
+    def tearDown(self):
+        self.patches.close()
+        self.temp.cleanup()
+
+    def at(self, x, y):
+        frame = self.frame.copy()
+        left, top, width, height = self.config.minimap_roi
+        frame[top:top + height, left:left + width] = (30, 30, 30)
+        cx, cy = left + round(x * width), top + round(y * height)
+        cv2.rectangle(frame, (cx - 2, cy - 2), (cx + 2, cy + 2), (0, 255, 255), -1)
+        return frame
+
+    def test_floor_error_includes_actual_expected_y_and_diagnostic_command(self):
+        with self.assertRaises(ValueError) as raised:
+            require_bottom((.30, .90), self.config, "瞬移起点")
+        message = str(raised.exception)
+        for text in ("起点", "X=0.3000", "Y=0.9000", "0.7590", "0.7240", "0.7940",
+                     str(self.config.minimap_roi), "--check-position"):
+            self.assertIn(text, message)
+
+    def test_invalid_start_fails_before_asking_user_to_teleport(self):
+        self.capture.return_value = self.at(.30, .90)
+        original = self.path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "起点.*Y=0.9000"):
+            measure_teleport(self.path)
+        self.assertEqual(self.capture.call_count, 1)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.window.return_value.close.assert_called_once()
+
+    def test_invalid_destination_is_rejected_and_does_not_save_measurement(self):
+        self.capture.side_effect = [self.at(.30, .759), self.at(.35, .90)]
+        original = self.path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "终点.*Y=0.9000"):
+            measure_teleport(self.path)
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_valid_measurements_keep_map_coordinates_and_store_safe_displacement(self):
+        self.capture.side_effect = [self.at(.30, .759), self.at(.35, .759)] * 3
+        measure_teleport(self.path)
+        updated = load_config(self.path)
+        self.assertEqual(self.capture.call_count, 6)
+        self.assertAlmostEqual(updated.teleport_max_dx, .05 * 1.25 + 2 / 140)
+        self.assertEqual(updated.bottom, self.config.bottom)
+        self.assertEqual(updated.top, self.config.top)
+        self.assertEqual(updated.minimap_roi, self.config.minimap_roi)
+
+    def test_preview_reports_original_coordinates_and_marks_detected_point(self):
+        panel, position = position_preview(self.frame, self.config)
+        self.assertAlmostEqual(position[0], .30)
+        self.assertAlmostEqual(position[1], 53 / 70)
+        # 140x70 小地图放大 4 倍后，红圈右边缘应在真实黄点右侧 8 像素。
+        cx, cy = round(position[0] * 560), round(position[1] * 280)
+        self.assertEqual(tuple(panel[cy, cx + 8]), (0, 0, 255))
+
+    def test_readonly_viewer_does_not_require_scale_or_write_config(self):
+        partial = replace(self.config, world_pixels_per_x=None)
+        self.window.return_value.capture.return_value = self.frame
+        for name in ("namedWindow", "imshow"):
+            self.patches.enter_context(patch(f"lionbot.calibrate.cv2.{name}"))
+        self.patches.enter_context(patch("lionbot.calibrate.cv2.waitKey", return_value=ord("q")))
+        with patch("lionbot.calibrate.save_config") as save:
+            check_position(partial)
+        save.assert_not_called()
+        self.window.return_value.close.assert_called_once()
+
+    def test_cli_can_check_coordinates_before_calibration_is_complete(self):
+        partial = replace(self.config, world_pixels_per_x=None)
+        save_json(self.path, asdict(partial))
+        with patch("lionbot.calibrate.check_position") as viewer:
+            self.assertEqual(main(["--config", str(self.path), "--check-position"]), 0)
+        viewer.assert_called_once_with(partial)
 
 
 if __name__ == "__main__":

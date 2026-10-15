@@ -99,6 +99,7 @@ def main(argv=None) -> int:
     group.add_argument("--calibrate", action="store_true")
     group.add_argument("--measure-scale", action="store_true")
     group.add_argument("--measure-teleport", action="store_true")
+    group.add_argument("--check-position", action="store_true", help="实时显示小地图 X/Y 和黄点红圈，不要求完成校准")
     group.add_argument("--run", action="store_true", help="明确启用按键发送")
     group.add_argument("--observe", action="store_true", help="只观察（默认）")
     group.add_argument("--image", type=Path, help="离线检测一张客户区截图，不发送按键")
@@ -120,6 +121,11 @@ def main(argv=None) -> int:
                 function(path)
             return 0
         config = load_config(path)
+        if args.check_position:
+            from .calibrate import check_position
+
+            check_position(config)
+            return 0
         config.require_calibration()
         if args.image:
             vision = Vision(config, path.parent)
