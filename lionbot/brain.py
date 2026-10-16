@@ -29,7 +29,6 @@ class Action:
     kind: str
     direction: str = ""
     reason: str = ""
-    text: str = ""
 
 
 @dataclass

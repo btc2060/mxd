@@ -11,7 +11,6 @@
   "alt_interval": 190.0,
   "attack_hold": 0.08,
   "face_hold": 0.08,
-  "pet_chat_min_seconds": 10.0,
-  "pet_chat_max_seconds": 30.0,
-  "pet_commands": ["坐", "不要", "不行", "不许做", "笨蛋", "傻瓜", "讨厌", "爱你", "嘘嘘", "说", "说话", "说吧", "叫", "趴下", "站", "站起来", "起来"]
+  "d_shots_before_a": 6,
+  "a_attack_shots": 4
 }

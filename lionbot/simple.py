@@ -86,11 +86,11 @@ def run_simple(config, path, send_keys):
         listener = Listener(on_press=on_press, on_release=on_release)
         listener.start()
         print("简单定点：" + ("发送按键" if send_keys else "仅观察，不发送按键、不累计攻击次数"))
-        print(f"X={config.station_x:.4f}；只向右 D，每组 {config.right_attack_shots} 次，"
+        print(f"X={config.station_x:.4f}；只向右攻击，D 每组 {config.right_attack_shots} 次，"
               f"单次间隔 {config.attack_interval:g}s，"
               f"组间等 {config.group_pause:g}s。")
-        print(f"随机每 {config.pet_chat_min_seconds:g}～{config.pet_chat_max_seconds:g}s 说一句宠物训练词；"
-              "Enter 打开聊天、输入中文、Enter 发送，施法与回位期间顺延。")
+        print(f"累计按下 D {config.d_shots_before_a} 次后，切换为 A {config.a_attack_shots} 次，再恢复 D；"
+              "回位前补打的 D 也计入，暂停和回位保留换键进度。")
         print(f"X 偏离后向右 D {config.recovery_shots} 次，再步行回位；启动 Alt 一次，此后每 {config.alt_interval:g}s 一次。")
         print("只截图小地图，不加载怪物/名牌/地形识别。F8 暂停/恢复；F9 将当前 X 设为新挂机点；F12 退出。")
         last_status, logged_at = "", float("-inf")
@@ -121,14 +121,15 @@ def run_simple(config, path, send_keys):
                     save_simple(path, updated)
                     config = updated
                     brain.set_station(config.station_x)
-                    print(f"新挂机 X={config.station_x:.4f} 已保存，攻击计数从右侧重新开始。")
+                    print(f"新挂机 X={config.station_x:.4f} 已保存；普通组数重置，保留 D/A 换键进度。")
             if paused.is_set():
                 brain.suspend()
                 time.sleep(.1)
                 continue
             action = brain.decide(position[0] if position else None, time.monotonic(), window.focused())
             current = f"X={position[0]:.4f}" if position else "黄点丢失"
-            status = f"{current} 目标={config.station_x:.4f} D组={brain.d_groups} {action.reason}"
+            status = (f"{current} 目标={config.station_x:.4f} D组={brain.d_groups} "
+                      f"D累计={brain.d_since_a}/{config.d_shots_before_a} A={brain.a_shots}/{config.a_attack_shots} {action.reason}")
             if status != last_status or started - logged_at >= 2:
                 print(status)
                 last_status, logged_at = status, started
@@ -150,7 +151,7 @@ def run_simple(config, path, send_keys):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="只向右 D 攻击、随机宠物训练说话，用小地图 X 回位")
+    parser = argparse.ArgumentParser(description="朝右 D/A 定点攻击，按 D 次数换键，用小地图 X 回位")
     parser.add_argument("--config", type=Path, default=Path("config.simple.local.json"))
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--setup", action="store_true", help="记录新的挂机 X；有旧框时复用小地图，无需怪物采样")

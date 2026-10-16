@@ -24,7 +24,6 @@ class InputExecutor:
         self.held: set[str] = set()
         self.lock = threading.RLock()
         self.hold_deadline: float | None = None
-        self.chat_open = False
 
     def check(self) -> None:
         if not self.active():
@@ -86,38 +85,12 @@ class InputExecutor:
         pressed_at = self.clock()
         try:
             self.check()
-            if self.chat_open:
-                # 只在游戏重新前台、允许输入后取消未发送的句子。
-                self.press("esc")
-                self.chat_open = False
-                self.delay(.05)
-                self.release("esc")
-                self.delay(.10)
-            if action.kind == "attack":
-                pressed_at = self.press("d")
-                self.delay(self.c.attack_hold)
-            elif action.kind == "pet_chat":
-                if (not action.text.strip() or len(action.text) > 32
-                        or any(ord(ch) < 32 for ch in action.text)):
-                    raise ValueError("宠物说话必须是单行短句")
-                self.press("enter")
-                self.chat_open = True
-                self.delay(.05)
-                self.release("enter")
-                self.delay(.15)
-                for character in action.text:
-                    self.check()
-                    self.keyboard.type_text(character)
-                    self.delay(.02)
-                self.delay(.10)
-                pressed_at = self.press("enter")
-                self.chat_open = False
+            if action.kind in ("attack", "attack_a"):
+                pressed_at = self.press("a" if action.kind == "attack_a" else "d")
                 try:
-                    self.delay(.05)
-                    self.release("enter")
-                    self.delay(.10)
+                    self.delay(self.c.attack_hold)
                 except InputCancelled:
-                    # 提交已发生，仍反馈成功，避免恢复后补发同一条；finally 负责松键。
+                    # 按下事件已经发出，仍反馈计数；finally 松键，后续等待重新获得前台。
                     return pressed_at
             elif action.kind == "alt":
                 pressed_at = self.press("alt")

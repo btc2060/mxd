@@ -71,15 +71,10 @@ class Keyboard:
         from pynput.keyboard import Controller, Key
 
         self.controller = Controller()
-        self.special = {name: getattr(Key, name) for name in
-                        ("left", "right", "up", "down", "space", "alt", "enter", "esc")}
+        self.special = {name: getattr(Key, name) for name in ("left", "right", "up", "down", "space", "alt")}
 
     def press(self, key: str) -> None:
         self.controller.press(self.special.get(key, key))
 
     def release(self, key: str) -> None:
         self.controller.release(self.special.get(key, key))
-
-    def type_text(self, text: str) -> None:
-        # Windows 后端以 Unicode 输入中文，不切换输入法、不使用剪贴板。
-        self.controller.type(text)
