@@ -1,0 +1,18 @@
+{
+  "window_title": "冒险岛怀旧服",
+  "minimap_roi": null,
+  "frame_size": null,
+  "station_x": null,
+  "x_tolerance": 0.008,
+  "right_attack_shots": 3,
+  "left_attack_shots": 3,
+  "attack_interval": 0.9,
+  "group_pause": 3.0,
+  "groups_per_direction": 5,
+  "alternate_every_rounds": 6,
+  "alternate_shots": 4,
+  "recovery_shots": 3,
+  "alt_interval": 190.0,
+  "attack_hold": 0.08,
+  "face_hold": 0.08
+}

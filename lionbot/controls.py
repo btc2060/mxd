@@ -85,8 +85,8 @@ class InputExecutor:
         pressed_at = self.clock()
         try:
             self.check()
-            if action.kind == "attack":
-                pressed_at = self.press("d")
+            if action.kind in ("attack", "attack_a"):
+                pressed_at = self.press("a" if action.kind == "attack_a" else "d")
                 self.delay(self.c.attack_hold)
             elif action.kind == "alt":
                 pressed_at = self.press("alt")

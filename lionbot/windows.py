@@ -49,6 +49,21 @@ class GameWindow:
     def close(self) -> None:
         self.screen.close()
 
+    def capture_region(self, roi, frame_size):
+        """简单定点只截取小地图；客户区尺寸变化时不沿用旧坐标。"""
+        import numpy as np
+
+        if not self.gui.IsWindow(self.hwnd) or self.gui.IsIconic(self.hwnd):
+            raise RuntimeError("游戏窗口已关闭或最小化")
+        _, _, width, height = self.gui.GetClientRect(self.hwnd)
+        if (width, height) != tuple(frame_size):
+            raise ValueError("客户区大小已改变，请恢复原尺寸或重新运行 python -m lionbot.simple --setup")
+        x, y, w, h = roi
+        if min(x, y) < 0 or min(w, h) <= 0 or x + w > width or y + h > height:
+            raise ValueError("小地图框超出客户区，请重新运行 python -m lionbot.simple --setup")
+        left, top = self.gui.ClientToScreen(self.hwnd, (0, 0))
+        return np.array(self.screen.grab(dict(left=left + x, top=top + y, width=w, height=h)))[:, :, :3].copy()
+
 
 class Keyboard:
     def __init__(self):
