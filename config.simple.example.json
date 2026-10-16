@@ -5,14 +5,13 @@
   "station_x": null,
   "x_tolerance": 0.008,
   "right_attack_shots": 3,
-  "left_attack_shots": 3,
   "attack_interval": 0.9,
   "group_pause": 3.0,
-  "groups_per_direction": 5,
-  "alternate_every_rounds": 6,
-  "alternate_shots": 4,
   "recovery_shots": 3,
   "alt_interval": 190.0,
   "attack_hold": 0.08,
-  "face_hold": 0.08
+  "face_hold": 0.08,
+  "pet_chat_min_seconds": 10.0,
+  "pet_chat_max_seconds": 30.0,
+  "pet_commands": ["坐", "不要", "不行", "不许做", "笨蛋", "傻瓜", "讨厌", "爱你", "嘘嘘", "说", "说话", "说吧", "叫", "趴下", "站", "站起来", "起来"]
 }

@@ -1,6 +1,7 @@
 """不连接游戏，验证最简循环的实际按键、时序、X 回位与独立设置。"""
 import io
 import json
+import random
 import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stdout
@@ -14,10 +15,10 @@ import numpy as np
 
 from lionbot.brain import Action
 from lionbot.config import Config
-from lionbot.controls import InputExecutor
+from lionbot.controls import InputCancelled, InputExecutor
 from lionbot.simple import main, run_simple, setup
-from lionbot.simple_cycle import SimpleConfig, SimpleCycle, load_simple
-from lionbot.windows import GameWindow
+from lionbot.simple_cycle import PET_COMMANDS, SimpleConfig, SimpleCycle, load_simple
+from lionbot.windows import GameWindow, Keyboard as WindowsKeyboard
 from tests.test_controls import Clock, Keyboard
 
 
@@ -31,7 +32,7 @@ class Simulation:
         self.c = c or config()
         self.clock = Clock()
         self.keyboard = Keyboard(self.clock)
-        self.brain = SimpleCycle(self.c)
+        self.brain = SimpleCycle(self.c, rng=random.Random(23))
         self.executor = InputExecutor(self.keyboard, Config(attack_hold=self.c.attack_hold,
                                                            face_hold=self.c.face_hold),
                                       clock=self.clock.time, sleep=self.clock.sleep)
@@ -54,22 +55,18 @@ class Simulation:
 
 
 class SimpleCycleTests(unittest.TestCase):
-    def test_defaults_run_six_full_rounds_before_four_a_and_then_resume_d(self):
+    def test_only_attacks_right_with_d_even_after_many_groups(self):
         sim = Simulation()
-        sim.until(lambda: any(e[:2] == ("press", "a") for e in sim.keyboard.events))
-        before_a = [a for _, a in sim.history if a.kind == "attack"]
-        self.assertEqual(len(before_a), 6 * 2 * 5 * 3)
-        self.assertEqual([a.direction for a in before_a],
-                         (["right"] * 15 + ["left"] * 15) * 6)
-        self.assertEqual(sim.brain.completed_rounds, 6)
-        sim.until(lambda: len([a for _, a in sim.history if a.kind == "attack"]) == 181)
-        attacks = [a for _, a in sim.history if a.kind in ("attack", "attack_a")]
-        self.assertEqual([a.kind for a in attacks[180:]], ["attack_a"] * 4 + ["attack"])
-        self.assertEqual([a.direction for a in attacks[180:]], ["left"] * 4 + ["right"])
+        sim.until(lambda: sim.brain.d_groups == 70)
+        attacks = [a for _, a in sim.history if a.kind == "attack"]
+        self.assertEqual(len(attacks), 210)
+        self.assertTrue(all(a.direction == "right" for a in attacks))
+        self.assertFalse({"a", "left"} & {e[1] for e in sim.keyboard.events if e[0] == "press"})
+        self.assertTrue(any(a.kind == "pet_chat" for _, a in sim.history))
         self.assertFalse(sim.keyboard.held)
 
     def test_group_pause_is_after_key_release_and_shots_keep_cast_interval(self):
-        sim = Simulation(config(groups_per_direction=2, alternate_every_rounds=1))
+        sim = Simulation()
         sim.until(lambda: sim.brain.d_groups == 3)
         attacks = [at for at, a in sim.history if a.kind == "attack"]
         self.assertEqual(len(attacks), 9)
@@ -81,32 +78,37 @@ class SimpleCycleTests(unittest.TestCase):
             if key == "d":
                 self.assertFalse({"left", "right"} & held)
 
-    def test_counts_and_pauses_are_configurable_and_a_repeats_at_each_round_interval(self):
-        sim = Simulation(config(right_attack_shots=2, left_attack_shots=2, group_pause=.5, attack_interval=1.1,
-                                groups_per_direction=2, alternate_every_rounds=2, alternate_shots=1))
-        sim.until(lambda: sum(a.kind == "attack_a" for _, a in sim.history) == 2)
-        attacks = [a for _, a in sim.history if a.kind in ("attack", "attack_a")]
-        self.assertEqual(len(attacks), 34)
-        self.assertEqual([i for i, a in enumerate(attacks) if a.kind == "attack_a"], [16, 33])
-        times = [at for at, a in sim.history if a.kind in ("attack", "attack_a")]
+    def test_counts_and_pauses_remain_configurable(self):
+        sim = Simulation(config(right_attack_shots=2, group_pause=.5, attack_interval=1.1))
+        sim.until(lambda: sim.brain.d_groups == 5)
+        times = [at for at, a in sim.history if a.kind == "attack"]
+        self.assertEqual(len(times), 10)
         self.assertTrue(all(b - a >= 1.1 - 1e-9 for a, b in zip(times, times[1:])))
 
-    def test_right_and_left_shot_counts_can_be_set_independently(self):
-        sim = Simulation(config(right_attack_shots=2, left_attack_shots=4,
-                                groups_per_direction=1, alternate_every_rounds=1))
-        sim.until(lambda: any(a.kind == "attack_a" for _, a in sim.history))
-        attacks = [a.direction for _, a in sim.history if a.kind == "attack"]
-        self.assertEqual(attacks, ["right"] * 2 + ["left"] * 4)
+    def test_pet_words_are_randomized_and_each_success_reschedules_ten_to_thirty_seconds(self):
+        sim = Simulation()
+        schedules, words = [], []
+        while len(words) < 6:
+            action = sim.tick()
+            if action.kind == "pet_chat":
+                at = sim.history[-1][0]
+                schedules.append(sim.brain.next_chat - at)
+                words.append(action.text)
+        self.assertTrue(all(10 <= delay <= 30 for delay in schedules))
+        self.assertGreater(len(set(schedules)), 1)
+        self.assertGreater(len(set(words)), 1)
+        self.assertTrue(all(word in PET_COMMANDS for word in words))
+        self.assertGreaterEqual(next(at for at, a in sim.history if a.kind == "pet_chat"), 10)
 
-    def test_knockback_clears_each_side_then_walks_back_without_counting_recovery(self):
+    def test_knockback_clears_right_then_walks_back_without_counting_recovery(self):
         sim = Simulation()
         sim.until(lambda: sim.brain.shots == 1)
         original_shots = sim.brain.shots
         start = len(sim.history)
         sim.until(lambda: sim.brain.recovery == "return", x=.56)
         recovery = [a for _, a in sim.history[start:] if a.kind == "attack"]
-        self.assertEqual([a.direction for a in recovery], ["left"] * 3 + ["right"] * 3)
-        self.assertEqual((sim.brain.d_groups, sim.brain.completed_rounds, sim.brain.shots), (0, 0, original_shots))
+        self.assertEqual([a.direction for a in recovery], ["right"] * 3)
+        self.assertEqual((sim.brain.d_groups, sim.brain.shots), (0, original_shots))
         while sim.tick(.56).kind != "walk":
             pass
         self.assertEqual(sim.keyboard.held, {"left"})
@@ -115,21 +117,28 @@ class SimpleCycleTests(unittest.TestCase):
         self.assertEqual(sim.tick(.504).kind, "wait")
         self.assertFalse(sim.keyboard.held)
         sim.until(lambda: sim.brain.d_groups == 1, x=.504)
-        self.assertEqual(sim.brain.completed_rounds, 0)
         self.assertFalse(sim.brain.recovery)
 
-    def test_alternate_group_interrupted_by_knockback_resumes_remaining_shots(self):
-        sim = Simulation(config(groups_per_direction=1, alternate_every_rounds=1))
-        sim.until(lambda: sim.brain.alternate_due and sim.brain.shots == 1)
-        self.assertEqual(sim.brain.completed_rounds, 1)
+    def test_pet_chat_between_shots_does_not_count_as_an_attack_or_reset_group(self):
+        sim = Simulation()
+        sim.until(lambda: sim.brain.shots == 1)
+        sim.brain.next_chat = sim.clock.now
+        sim.until(lambda: any(a.kind == "pet_chat" for _, a in sim.history))
+        self.assertEqual((sim.brain.shots, sim.brain.d_groups), (1, 0))
+        sim.until(lambda: sim.brain.d_groups == 1)
+        self.assertEqual(sum(a.kind == "attack" for _, a in sim.history), 3)
+
+    def test_due_chat_waits_for_return_then_sends_once_without_catching_up(self):
+        sim = Simulation()
+        sim.tick()
+        sim.brain.next_chat = sim.clock.now
         sim.until(lambda: sim.brain.recovery == "return", x=.56)
-        self.assertEqual(sim.brain.shots, 1)
+        self.assertFalse(any(a.kind == "pet_chat" for _, a in sim.history))
         while sim.tick(.56).kind != "walk":
             pass
         sim.tick(.5)
-        sim.until(lambda: not sim.brain.alternate_due)
-        self.assertEqual(sum(a.kind == "attack_a" for _, a in sim.history), 4)
-        self.assertEqual(sim.brain.completed_rounds, 1)
+        sim.until(lambda: any(a.kind == "pet_chat" for _, a in sim.history))
+        self.assertGreater(sim.brain.next_chat, sim.clock.now)
 
     def test_alt_is_first_key_then_every_190_seconds_and_pause_does_not_repeat_start(self):
         sim = Simulation()
@@ -147,10 +156,11 @@ class SimpleCycleTests(unittest.TestCase):
     def test_new_station_resets_right_cycle_but_preserves_alt_schedule_and_cast_cooldown(self):
         sim = Simulation()
         sim.until(lambda: sim.brain.shots == 1)
-        next_alt, cooldown = sim.brain.next_alt, sim.brain.busy_until
+        next_alt, next_chat, cooldown = sim.brain.next_alt, sim.brain.next_chat, sim.brain.busy_until
         sim.brain.set_station(.6)
-        self.assertEqual((sim.brain.direction, sim.brain.shots, sim.brain.d_groups), ("right", 0, 0))
+        self.assertEqual((sim.brain.shots, sim.brain.d_groups), (0, 0))
         self.assertEqual((sim.brain.next_alt, sim.brain.busy_until), (next_alt, cooldown))
+        self.assertEqual(sim.brain.next_chat, next_chat)
         self.assertEqual(sim.brain.decide(.6, cooldown - .001).kind, "wait")
 
     def test_tiny_minimap_jitter_does_not_interrupt_normal_cycle(self):
@@ -181,21 +191,12 @@ class SimpleCycleTests(unittest.TestCase):
         self.assertFalse(sim.keyboard.held)
         self.assertFalse(sim.brain.recovery)
 
-    def test_a_executor_releases_movement_and_uses_only_a(self):
-        sim = Simulation()
-        sim.executor.execute(Action("walk", "left"))
-        sim.executor.execute(Action("attack_a", "right"))
-        attack = next(e for e in sim.keyboard.events if e[:2] == ("press", "a"))
-        self.assertEqual(attack[2], set())
-        self.assertFalse(sim.keyboard.held)
-        self.assertFalse(any(e[:2] == ("press", "d") for e in sim.keyboard.events))
-
     def test_real_direction_inputs_clear_after_knockback_return_and_resume_cycle(self):
         class World(Clock, Keyboard):
             def __init__(self):
                 Clock.__init__(self)
                 Keyboard.__init__(self, self)
-                self.x, self.kicked = .5, False
+                self.x, self.kicked, self.facing = .5, False, "left"
 
             def sleep(self, delay):
                 self.x += .06 * delay * (int("right" in self.held) - int("left" in self.held))
@@ -203,6 +204,10 @@ class SimpleCycleTests(unittest.TestCase):
 
             def press(self, key):
                 Keyboard.press(self, key)
+                if key in ("left", "right"):
+                    self.facing = key
+                if key == "d":
+                    assert self.facing == "right", "回位后未先转向右侧"
                 if key == "d" and not self.kicked:
                     self.x += .06
                     self.kicked = True
@@ -227,9 +232,81 @@ class SimpleCycleTests(unittest.TestCase):
         self.assertTrue(saw_recovery)
         self.assertTrue(saw_walk)
         self.assertLessEqual(abs(world.x - .5), brain.outer_tolerance)
-        self.assertEqual(sum(e[:2] == ("press", "d") for e in world.events), 3 + 6)
+        self.assertEqual(sum(e[:2] == ("press", "d") for e in world.events), 3 + 3)
         self.assertFalse(world.held)
-        self.assertFalse({"f", "space", "up", "down"} & {e[1] for e in world.events})
+        self.assertFalse({"a", "f", "space", "up", "down"} & {e[1] for e in world.events})
+
+
+class PetInputTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.keyboard = Keyboard(self.clock)
+        self.executor = InputExecutor(self.keyboard, Config(), clock=self.clock.time, sleep=self.clock.sleep)
+
+    def test_chinese_chat_releases_movement_opens_types_submits_and_closes(self):
+        self.executor.execute(Action("walk", "left"))
+        at = self.executor.execute(Action("pet_chat", text="站起来"))
+        words = [e for e in self.keyboard.events if e[0] == "text"]
+        self.assertEqual("".join(e[1] for e in words), "站起来")
+        self.assertTrue(all(not e[2] for e in words))
+        presses = [e for e in self.keyboard.events if e[0] == "press"]
+        self.assertEqual([e[1] for e in presses], ["left", "enter", "enter"])
+        self.assertEqual(at, presses[-1][3])
+        self.assertFalse(self.executor.chat_open)
+        self.assertFalse(self.keyboard.held)
+
+    def test_interrupted_text_is_cancelled_on_resume_before_attack_not_sent(self):
+        active = [True]
+        self.executor.active = lambda: active[0]
+        original = self.keyboard.type_text
+
+        def interrupt(text):
+            original(text)
+            active[0] = False
+
+        self.keyboard.type_text = interrupt
+        with self.assertRaises(InputCancelled):
+            self.executor.execute(Action("pet_chat", text="不许做"))
+        self.assertTrue(self.executor.chat_open)
+        self.assertFalse(self.keyboard.held)
+        self.assertEqual(sum(e[:2] == ("press", "enter") for e in self.keyboard.events), 1)
+        active[0] = True
+        self.executor.execute(Action("attack", "right"))
+        presses = [e[1] for e in self.keyboard.events if e[0] == "press"]
+        self.assertEqual(presses, ["enter", "esc", "d"])
+        self.assertFalse(self.executor.chat_open)
+        self.assertFalse(self.keyboard.held)
+
+    def test_focus_loss_after_submit_does_not_press_escape_when_resuming(self):
+        active = [True]
+        self.executor.active = lambda: active[0]
+        original = self.keyboard.press
+
+        def interrupt(key):
+            original(key)
+            if key == "enter" and sum(e[:2] == ("press", "enter") for e in self.keyboard.events) == 2:
+                active[0] = False
+
+        self.keyboard.press = interrupt
+        at = self.executor.execute(Action("pet_chat", text="坐"))
+        self.assertGreater(at, 0)
+        self.assertFalse(self.executor.chat_open)
+        self.assertFalse(self.keyboard.held)
+        active[0] = True
+        self.executor.execute(Action("attack", "right"))
+        self.assertFalse(any(e[:2] == ("press", "esc") for e in self.keyboard.events))
+
+    def test_invalid_multiline_is_rejected_without_opening_chat(self):
+        with self.assertRaises(ValueError):
+            self.executor.execute(Action("pet_chat", text="坐\n说话"))
+        self.assertFalse(self.keyboard.events)
+
+    def test_windows_backend_types_unicode_without_ascii_key_conversion(self):
+        keyboard = object.__new__(WindowsKeyboard)
+        keyboard.controller = Mock()
+        keyboard.type_text("不许做")
+        keyboard.controller.type.assert_called_once_with("不许做")
+        keyboard.controller.press.assert_not_called()
 
 
 class SimpleSetupTests(unittest.TestCase):
@@ -260,7 +337,6 @@ class SimpleSetupTests(unittest.TestCase):
         saved = load_simple(self.path)
         self.assertEqual(saved.station_x, .51)
         self.assertEqual(saved.right_attack_shots, 3)
-        self.assertEqual(saved.left_attack_shots, 3)
         self.assertEqual(old.read_bytes(), before)
         self.assertNotIn("template_manifest", json.loads(self.path.read_text()))
 
@@ -290,12 +366,24 @@ class SimpleSetupTests(unittest.TestCase):
         live.assert_not_called()
 
     def test_invalid_counts_intervals_and_rois_are_rejected(self):
-        for change in ({"right_attack_shots": 0}, {"left_attack_shots": -1}, {"alternate_every_rounds": 0},
-                       {"groups_per_direction": 1.5}, {"recovery_shots": True},
+        for change in ({"right_attack_shots": 0}, {"recovery_shots": True},
+                       {"pet_chat_min_seconds": 0}, {"pet_chat_min_seconds": 31},
+                       {"pet_chat_max_seconds": float("nan")}, {"pet_commands": []},
+                       {"pet_commands": ["说话\n"]}, {"pet_commands": "说话"},
                        {"attack_interval": .1}, {"group_pause": -1}, {"group_pause": float("inf")},
                        {"minimap_roi": (0, 0, 801, 100)}, {"station_x": 1.1}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 config(**change).validate()
+
+    def test_old_config_discards_left_and_a_options_but_keeps_station_and_right_settings(self):
+        raw = asdict(config(right_attack_shots=6))
+        raw.update(left_attack_shots=99, groups_per_direction=5, alternate_every_rounds=6, alternate_shots=4)
+        raw.pop("pet_commands")
+        self.path.write_text(json.dumps(raw))
+        loaded = load_simple(self.path)
+        self.assertEqual(loaded, config(right_attack_shots=6))
+        self.assertFalse(hasattr(loaded, "alternate_shots"))
+        self.assertEqual(len(loaded.pet_commands), 17)
 
     def test_region_capture_grabs_only_minimap_and_rejects_resized_window(self):
         window = object.__new__(GameWindow)

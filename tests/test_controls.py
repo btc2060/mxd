@@ -31,6 +31,9 @@ class Keyboard:
         self.events.append(("release", key, set(self.held), self.clock.time()))
         self.held.discard(key)
 
+    def type_text(self, text):
+        self.events.append(("text", text, set(self.held), self.clock.time()))
+
 
 class ControlTests(unittest.TestCase):
     def setUp(self):

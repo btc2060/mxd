@@ -86,12 +86,12 @@ def run_simple(config, path, send_keys):
         listener = Listener(on_press=on_press, on_release=on_release)
         listener.start()
         print("简单定点：" + ("发送按键" if send_keys else "仅观察，不发送按键、不累计攻击次数"))
-        print(f"X={config.station_x:.4f}；D 每组右 {config.right_attack_shots} 次、左 {config.left_attack_shots} 次，"
+        print(f"X={config.station_x:.4f}；只向右 D，每组 {config.right_attack_shots} 次，"
               f"单次间隔 {config.attack_interval:g}s，"
-              f"组间等 {config.group_pause:g}s，同侧 {config.groups_per_direction} 组后换边，起始朝右。")
-        print(f"右侧 {config.groups_per_direction} 组＋左侧 {config.groups_per_direction} 组为一完整轮次；"
-              f"每 {config.alternate_every_rounds} 轮插入 {config.alternate_shots} 次 A，再恢复 D。")
-        print(f"X 偏离后左右各 D {config.recovery_shots} 次，再步行回位；启动 Alt 一次，此后每 {config.alt_interval:g}s 一次。")
+              f"组间等 {config.group_pause:g}s。")
+        print(f"随机每 {config.pet_chat_min_seconds:g}～{config.pet_chat_max_seconds:g}s 说一句宠物训练词；"
+              "Enter 打开聊天、输入中文、Enter 发送，施法与回位期间顺延。")
+        print(f"X 偏离后向右 D {config.recovery_shots} 次，再步行回位；启动 Alt 一次，此后每 {config.alt_interval:g}s 一次。")
         print("只截图小地图，不加载怪物/名牌/地形识别。F8 暂停/恢复；F9 将当前 X 设为新挂机点；F12 退出。")
         last_status, logged_at = "", float("-inf")
         while not stopped.is_set():
@@ -128,8 +128,7 @@ def run_simple(config, path, send_keys):
                 continue
             action = brain.decide(position[0] if position else None, time.monotonic(), window.focused())
             current = f"X={position[0]:.4f}" if position else "黄点丢失"
-            status = (f"{current} 目标={config.station_x:.4f} D组={brain.d_groups} "
-                      f"完整轮次={brain.completed_rounds} {action.reason}")
+            status = f"{current} 目标={config.station_x:.4f} D组={brain.d_groups} {action.reason}"
             if status != last_status or started - logged_at >= 2:
                 print(status)
                 last_status, logged_at = status, started
@@ -151,7 +150,7 @@ def run_simple(config, path, send_keys):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="最简 D/A 定点挂机，只用小地图 X 回位")
+    parser = argparse.ArgumentParser(description="只向右 D 攻击、随机宠物训练说话，用小地图 X 回位")
     parser.add_argument("--config", type=Path, default=Path("config.simple.local.json"))
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--setup", action="store_true", help="记录新的挂机 X；有旧框时复用小地图，无需怪物采样")
