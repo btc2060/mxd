@@ -126,9 +126,24 @@ class ScreenMapper:
         return None
 
 
-def calibrate_anchor(path: Path) -> None:
-    from .calibrate import fresh, get_position, save_json, select_point
+def save_screen_anchor(config: Config, root: Path, frame, position, feet) -> None:
+    from .calibrate import save_json
     from .vision import write_image
+
+    mapper = ScreenMapper(config, root, load_saved=False)
+    mapper.seed(frame, position, feet)
+    if not mapper.references:
+        raise ValueError(mapper.notice)
+    target = root / config.screen_anchor
+    image_path = target.with_name(target.stem + "-frame.png")
+    write_image(image_path, frame)
+    save_json(target, {"position": position, "feet": feet, "frame": image_path.name,
+                       "frame_size": config.frame_size, "minimap_roi": config.minimap_roi,
+                       "combat_roi": config.combat_roi, "world_pixels_per_x": config.world_pixels_per_x})
+
+
+def calibrate_anchor(path: Path) -> None:
+    from .calibrate import fresh, get_position, select_point
     from .windows import GameWindow
 
     config = load_config(path)
@@ -141,16 +156,7 @@ def calibrate_anchor(path: Path) -> None:
         if not any(abs(position[1] - floor.y) <= config.floor_tolerance for floor in (config.bottom, config.top)):
             raise ValueError("脚底参考需要在已配置的底层或顶层地面采集，不能在梯子上")
         feet = select_point("Click YOUR character feet ONCE / no nameplate needed", frame)
-        mapper = ScreenMapper(config, path.parent, load_saved=False)
-        mapper.seed(frame, position, feet)
-        if not mapper.references:
-            raise ValueError(mapper.notice)
-        target = path.parent / config.screen_anchor
-        image_path = target.with_name(target.stem + "-frame.png")
-        write_image(image_path, frame)
-        save_json(target, {"position": position, "feet": feet, "frame": image_path.name,
-                           "frame_size": config.frame_size, "minimap_roi": config.minimap_roi,
-                           "combat_roi": config.combat_roi, "world_pixels_per_x": config.world_pixels_per_x})
+        save_screen_anchor(config, path.parent, frame, position, feet)
         print(f"已保存黄点位置 {position} 与主画面脚底 {feet}。运行时无需名牌持续出现。")
     finally:
         window.close()

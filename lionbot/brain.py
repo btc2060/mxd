@@ -74,9 +74,9 @@ def target_status(mob: Mob, obs: Observation, config: Config, direction: str = "
         return "height"
     if not mob.confirmed:
         return "pending"
-    if config.world_pixels_per_x is None:
+    if config.attack_reach_px is None:
         return "uncalibrated"
-    return "ready" if abs(dx) / config.world_pixels_per_x <= config.attack_range else "range"
+    return "ready" if abs(dx) <= config.attack_reach_px else "range"
 
 
 class Brain:
@@ -338,7 +338,8 @@ class Brain:
         x, y = obs.position
         candidates = [m for m in obs.mobs
                       if target_status(m, obs, self.c) in ("ready", "pending")
-                      and abs(m.feet[0] - obs.player_feet[0]) <= self.c.attack_range * self.c.world_pixels_per_x]
+                      and self.c.attack_reach_px is not None
+                      and abs(m.feet[0] - obs.player_feet[0]) <= self.c.attack_reach_px]
         ready = [m for m in candidates if m.confirmed and not m.recovered]
         if candidates or force_check or (require_localized and obs.player_feet is None):
             if not self.clearing:

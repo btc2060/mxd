@@ -18,6 +18,11 @@ class Floor:
 
 @dataclass(frozen=True)
 class Config:
+    behavior: str = "patrol"
+    monster_name: str = "蓝独角狮"
+    station: tuple[float, float] | None = None
+    station_tolerance: float = 0.008
+    station_recover_timeout: float = 6.0
     window_title: str = "冒险岛怀旧服"
     # 以下 ROI 均为游戏客户区像素坐标 [x, y, width, height]。
     minimap_roi: tuple[int, int, int, int] | None = None
@@ -34,6 +39,7 @@ class Config:
     # 只向内缩 0.055，仍可覆盖距边缘 0.086 内的怪物。
     turn_inset: float = 0.055
     attack_range: float = 0.086
+    attack_range_px: float | None = None
     attack_interval: float = 0.9
     attack_hold: float = 0.08
     face_hold: float = 0.08
@@ -84,7 +90,23 @@ class Config:
     top_drop_x: float | None = 0.045
     drop_direction: str = "left"
 
+    @property
+    def attack_reach_px(self) -> float | None:
+        if self.attack_range_px is not None:
+            return self.attack_range_px
+        return self.attack_range * self.world_pixels_per_x if self.world_pixels_per_x is not None else None
+
     def validate(self) -> None:
+        if self.behavior not in ("patrol", "stationary"):
+            raise ValueError("behavior 只能是 patrol 或 stationary")
+        if self.station is not None and (len(self.station) != 2 or not all(0 <= v <= 1 for v in self.station)):
+            raise ValueError("定点 station 必须为小地图归一化坐标 [X, Y]")
+        if not 0 < self.station_tolerance <= .05 or self.station_recover_timeout <= 0:
+            raise ValueError("定点 X 容差必须为 (0, 0.05]，回位超时必须为正数")
+        if self.behavior == "stationary" and self.auto_route:
+            raise ValueError("定点模式需要 auto_route=false，使用独立地图配置")
+        if self.attack_range_px is not None and not 0 < self.attack_range_px <= 4096:
+            raise ValueError("攻击像素射程 attack_range_px 必须为 (0, 4096]")
         for floor in (self.bottom, self.top):
             if not 0 <= floor.y <= 1:
                 raise ValueError("楼层 Y 必须是小地图归一化坐标")
@@ -151,6 +173,8 @@ class Config:
 
     def require_calibration(self) -> None:
         self.validate()
+        if self.behavior == "stationary" and (self.station is None or self.attack_range_px is None):
+            raise ValueError("尚未采集定点坐标或像素射程；请运行 python -m lionbot --config <配置路径> --calibrate-stationary")
         required = {"小地图范围": self.minimap_roi, "主画面范围": self.combat_roi,
                     "窗口尺寸": self.frame_size}
         missing = [name for name, value in required.items() if value is None]
@@ -158,6 +182,8 @@ class Config:
             raise ValueError("尚缺少" + "、".join(missing)
                              + "；请运行 python -m lionbot --calibrate，已保存的步骤会自动续做")
         if self.world_pixels_per_x is None:
+            if self.behavior == "stationary":
+                raise ValueError("黄点与主画面的比例尚未完成，请在此配置下重新运行 --calibrate-stationary 续做；无需测量 F")
             raise ValueError("截图区域和角色位置已保存，但射程比例尚未完成；请先运行 "
                              "python -m lionbot --measure-scale，再运行 --measure-teleport")
 
@@ -173,7 +199,7 @@ def load_config(path: str | Path) -> Config:
     for name in ("bottom", "top"):
         if name in raw:
             raw[name] = Floor(**raw[name])
-    for name in ("minimap_roi", "combat_roi", "frame_size", "player_feet_offset"):
+    for name in ("minimap_roi", "combat_roi", "frame_size", "player_feet_offset", "station"):
         if raw.get(name) is not None:
             raw[name] = tuple(raw[name])
     config = Config(**raw)

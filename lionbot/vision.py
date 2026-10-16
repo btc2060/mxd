@@ -92,7 +92,7 @@ def load_templates(manifest: Path) -> list[Template]:
         result.append(make_template(image, offset))
         result.append(make_template(cv2.flip(image, 1), (image.shape[1] - 1 - offset[0], offset[1])))
     if not result:
-        raise ValueError("至少采集一张蓝独角狮模板；建议站立、行走、受击各采集")
+        raise ValueError("至少采集一张怪物模板；建议补充正常和攻击/受击姿态")
     return result
 
 
@@ -115,7 +115,7 @@ def suppress_duplicates(found: list[Detection]) -> list[Detection]:
 
 def detect_monsters(frame: np.ndarray, roi, templates: list[Template],
                     threshold: float = 0.82, edge_threshold: float = 0.40,
-                    excluded_roi=None) -> list[Detection]:
+                    excluded_roi=None, blue_lion_colors: bool = True) -> list[Detection]:
     image = crop(frame, roi)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 60, 140)
@@ -149,7 +149,7 @@ def detect_monsters(frame: np.ndarray, roi, templates: list[Template],
             white = (colors[:, :, 1] < 100) & (colors[:, :, 2] > 160)
             blue = ((colors[:, :, 0] >= 90) & (colors[:, :, 0] <= 135)
                     & (colors[:, :, 1] >= 60))
-            if np.mean(white) < 0.08 or np.mean(blue) < 0.02:
+            if blue_lion_colors and (np.mean(white) < 0.08 or np.mean(blue) < 0.02):
                 continue
             feet = (box[0] + template.feet_offset[0], box[1] + template.feet_offset[1])
             found.append(Detection(box, feet, min(float(scores[y, x]), color_score)))
@@ -289,7 +289,8 @@ class Vision:
             return Observation(position, None, focused=focused, location_source="unmapped")
         found = (detect_monsters(frame, self.c.combat_roi, self.templates,
                                  self.c.monster_threshold, self.c.edge_threshold,
-                                 excluded_roi=self.c.minimap_roi) if track_mobs else [])
+                                 excluded_roi=self.c.minimap_roi,
+                                 blue_lion_colors=self.c.behavior == "patrol") if track_mobs else [])
         moving_boxes = [d.box for d in found]
         player = self.mapper.locate(frame, position, moving_boxes)
         source = "terrain" if player is not None else "unmapped"
@@ -330,7 +331,8 @@ class Vision:
                 continue
             local = detect_monsters(frame, (x, y, right - x, bottom - y), self.templates,
                                     self.c.hurt_threshold, min(.30, self.c.edge_threshold),
-                                    excluded_roi=self.c.minimap_roi)
+                                    excluded_roi=self.c.minimap_roi,
+                                    blue_lion_colors=self.c.behavior == "patrol")
             local = [d for d in local if np.hypot(seed.feet[0] - d.feet[0], seed.feet[1] - d.feet[1]) <= 45]
             if local:
                 best = max(local, key=lambda d: d.score)
@@ -363,7 +365,7 @@ class Vision:
                         (x, y - 4), 0, .4, color, 1)
         if obs.player_feet:
             x, y = map(int, obs.player_feet)
-            reach = round(self.c.attack_range * self.c.world_pixels_per_x)
+            reach = round(self.c.attack_reach_px or 0)
             top, bottom = map(round, attack_vertical_bounds(obs.player_feet, self.c))
             cv2.rectangle(output, (x - reach, top), (x + reach, bottom), (255, 0, 255), 1)
             cv2.line(output, (x - reach, y), (x + reach, y), (255, 0, 255), 2)
@@ -373,7 +375,8 @@ class Vision:
                 center_y = round((top + bottom) / 2)
                 end_x = x + (40 if direction == "right" else -40)
                 cv2.arrowedLine(output, (x, center_y), (end_x, center_y), (255, 0, 255), 1)
-            cv2.putText(output, f"BODY BAND: Y={top}..{bottom} H={self.c.player_height_px:.0f}px MOVE:{direction.upper()}",
+            direction_label = "FACE" if self.c.behavior == "stationary" else "MOVE"
+            cv2.putText(output, f"BODY BAND: Y={top}..{bottom} H={self.c.player_height_px:.0f}px {direction_label}:{direction.upper()}",
                         (12, output.shape[0] - 60), 0, .4, (255, 0, 255), 1)
         cv2.putText(output, status, (12, output.shape[0] - 15), 0, .5, (0, 255, 255), 1)
         cv2.putText(output, "GREEN: nearby in range | GRAY: height | BLUE: far | ORANGE: pending",

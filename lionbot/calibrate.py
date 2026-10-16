@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .config import Config, load_config
+from .config import Config, Floor, load_config
 from .vision import (crop, detect_monsters, locate_player, make_template, measure_world_scale,
                      minimap_position, read_image, write_image)
 from .windows import GameWindow
@@ -213,7 +213,8 @@ def check_position(config: Config) -> None:
 
 
 def measure_scale(window: GameWindow, config: Config) -> Config:
-    first = fresh(window, "在底层平地站定，开始测量攻击距离的坐标比例。")
+    first = fresh(window, "在当前挂机平台站定，开始测量黄点与主画面的坐标比例。"
+                  if config.behavior == "stationary" else "在底层平地站定，开始测量攻击距离的坐标比例。")
     first_pos = get_position(first, config)
     print_position("步行测量起点", first_pos, config)
     first_feet = select_point("Click YOUR character feet / Esc cancels", first)
@@ -226,7 +227,10 @@ def measure_scale(window: GameWindow, config: Config) -> Config:
     second_feet = select_point("Click YOUR character feet in SECOND frame", second)
     scale, quality = measure_world_scale(first, second, background_roi,
                                           first_pos, second_pos, first_feet, second_feet)
-    print(f"每单位归一化 X = {scale:.1f} 主画面像素；0.086 射程约 {scale * .086:.0f} 像素；配准质量 {quality:.2f}")
+    if config.behavior == "stationary":
+        print(f"每单位归一化 X = {scale:.1f} 主画面像素；配准质量 {quality:.2f}。食人花射程将另行记录。")
+    else:
+        print(f"每单位归一化 X = {scale:.1f} 主画面像素；0.086 射程约 {scale * .086:.0f} 像素；配准质量 {quality:.2f}")
     return replace(config, world_pixels_per_x=scale)
 
 
@@ -306,12 +310,18 @@ def calibrate(path: Path, restart: bool = False, reuse_templates: Path | None = 
         root = path.parent
         manifest = root / config.template_manifest
         print("校准可中断续做；菜单内点击按钮或按快捷键，不需要切回终端输入 q/n。")
-        frame = fresh(window, "请在底层平地站稳，保持原先测量坐标时的窗口大小和小地图展开方式。")
+        frame = fresh(window, "请在散步路2可步行的平台站稳，固定游戏窗口尺寸和小地图展开方式。"
+                      if config.behavior == "stationary"
+                      else "请在底层平地站稳，保持原先测量坐标时的窗口大小和小地图展开方式。")
         if config.minimap_roi is None or config.frame_size is None:
-            print("框选小地图内部坐标区域，必须与您提供 .029/.659/.759/.130 时的归一化范围一致。")
+            print("框选当前地图的小地图内部区域，排除标题、按钮和黄色图标。" if config.behavior == "stationary"
+                  else "框选小地图内部坐标区域，必须与您提供 .029/.659/.759/.130 时的归一化范围一致。")
             minimap_roi = select_roi("Minimap coordinate region", frame)
             config = replace(config, minimap_roi=minimap_roi, frame_size=tuple(frame.shape[1::-1]))
             get_position(frame, config)
+            save_config(path, config)
+        if config.behavior == "stationary":
+            config = replace(config, bottom=Floor(get_position(frame, config)[1], None, None))
             save_config(path, config)
         print(f"当前角色小地图位置：{get_position(frame, config)}；底层配置 Y={config.bottom.y:.4f}，"
               "不一致时用 --calibrate-map 重测地图点位。")
@@ -351,13 +361,17 @@ def calibrate(path: Path, restart: bool = False, reuse_templates: Path | None = 
                 if answer == "new":
                     frame = fresh(window, "等待另一个站立、行走或受击姿态后采集。")
                     get_position(frame, config)
-            print("框选一只蓝独角狮的完整头部或身体，包含蓝白轮廓与双眼；排除名牌、HP 条和宠物。")
-            monster_roi = select_roi("Blue lion HEAD or BODY / NOT pet", frame)
+            print("框选一只食人花的完整花头或身体，保留清晰轮廓；不要含技能特效、伤害数字和大块背景。"
+                  if config.behavior == "stationary"
+                  else "框选一只蓝独角狮的完整头部或身体，包含蓝白轮廓与双眼；排除名牌、HP 条和宠物。")
+            monster_roi = select_roi("Plant HEAD or BODY" if config.behavior == "stationary"
+                                     else "Blue lion HEAD or BODY / NOT pet", frame)
             monster_feet = select_point("Click THIS monster's ground contact point", frame)
             image = crop(frame, monster_roi)
             offset = (monster_feet[0] - monster_roi[0], monster_feet[1] - monster_roi[1])
             make_template(image, offset)
-            filename = f"lion-{time.time_ns()}.png"
+            prefix = "plant" if config.behavior == "stationary" else "lion"
+            filename = f"{prefix}-{time.time_ns()}.png"
             write_image(manifest.parent / filename, image)
             entries.append(dict(file=filename, feet_offset=offset))
             save_json(manifest, entries)
@@ -366,7 +380,8 @@ def calibrate(path: Path, restart: bool = False, reuse_templates: Path | None = 
         if config.world_pixels_per_x is None:
             config = measure_scale(window, config)
             save_config(path, config)
-        print("模板和射程比例校准完成。再运行 --measure-teleport 测量 F 的安全位移上限。")
+        print("模板和坐标比例已保存，接下来记录定点和攻击范围，无需测量 F。" if config.behavior == "stationary"
+              else "模板和射程比例校准完成。再运行 --measure-teleport 测量 F 的安全位移上限。")
     finally:
         window.close()
         cv2.destroyAllWindows()
