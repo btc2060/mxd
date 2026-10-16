@@ -100,6 +100,44 @@ class CombatTests(unittest.TestCase):
         self.assertEqual((brain.decide(both, 4.13).kind, brain.facing), ("attack", "left"))
         self.assertEqual(brain.direction, "right")
 
+    def test_six_shot_setting_finishes_six_attacks_before_switching_sides(self):
+        config = replace(Config(), attack_burst_shots=6, world_pixels_per_x=2000,
+                         auto_route=False)
+        brain = prepared(config)
+        brain.facing = "right"
+        obs = observation(mobs=[Mob((510, 500))])
+        both = observation(mobs=[Mob((250, 500)), Mob((510, 500))])
+        for shot in range(1, 7):
+            current = obs if shot == 1 else both
+            action = brain.decide(current, shot)
+            self.assertEqual((action.kind, action.direction), ("attack", "right"))
+            self.assertTrue(action.reason.endswith(f"{shot}/6"))
+            brain.executed(action, shot, current)
+            self.assertEqual(brain.decide(current, shot + .899).kind, "wait")
+        face = brain.decide(both, 7)
+        self.assertEqual((face.kind, face.direction), ("face", "left"))
+        brain.executed(face, 7, both)
+        attack = brain.decide(both, 7.13)
+        self.assertEqual((attack.kind, attack.direction), ("attack", "left"))
+        self.assertTrue(attack.reason.endswith("1/6"))
+        self.assertEqual(brain.direction, "right")
+
+    def test_six_shot_burst_survives_hurt_detection_loss_then_stops_for_clear_check(self):
+        config = replace(Config(), attack_burst_shots=6, world_pixels_per_x=2000,
+                         auto_route=False)
+        brain = prepared(config)
+        brain.facing = "right"
+        first = observation(mobs=[Mob((510, 500))])
+        for shot in range(1, 7):
+            current = first if shot == 1 else observation()
+            action = brain.decide(current, shot)
+            self.assertEqual((action.kind, action.direction), ("attack", "right"))
+            self.assertTrue(action.reason.endswith(f"{shot}/6"))
+            brain.executed(action, shot, current)
+        for now in (7, 7.3, 7.6):
+            self.assertEqual(brain.decide(observation(), now).kind, "wait")
+        self.assertEqual(brain.decide(observation(), 7.9).kind, "walk")
+
     def test_resume_original_route_only_after_multiple_empty_frames_and_time(self):
         brain = prepared()
         brain.facing = "right"
@@ -625,6 +663,30 @@ class RouteTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_custom_six_shot_json_is_preserved_across_policy_versions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            for version in (None, 1, 2):
+                with self.subTest(version=version):
+                    raw = {"attack_burst_shots": 6}
+                    if version is not None:
+                        raw["patrol_policy_version"] = version
+                    saved = json.dumps(raw)
+                    path.write_text(saved)
+                    config = load_config(path)
+                    self.assertEqual(config.attack_burst_shots, 6)
+                    self.assertEqual(config.patrol_policy_version, 2)
+                    self.assertEqual(path.read_text(), saved)
+
+    def test_attack_burst_shots_requires_positive_integer_without_three_shot_cap(self):
+        for shots in (1, 3, 6, 12):
+            with self.subTest(shots=shots):
+                replace(Config(), attack_burst_shots=shots).validate()
+        for shots in (0, -1, 1.5, "6", True, None):
+            with self.subTest(shots=shots):
+                with self.assertRaisesRegex(ValueError, "attack_burst_shots.*正整数"):
+                    replace(Config(), attack_burst_shots=shots).validate()
+
     def test_old_two_shot_json_upgrades_without_changing_templates_or_map(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"

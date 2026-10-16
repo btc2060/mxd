@@ -112,8 +112,8 @@ class Config:
             raise ValueError("受击追踪阈值必须不高于正常识别阈值，且位于 (0, 1]")
         if not 0 < self.confirmation_gap <= self.hurt_recovery_seconds <= 2:
             raise ValueError("识别间断和受击追踪时间必须满足 0 < gap <= recovery <= 2 秒")
-        if not 1 <= self.attack_burst_shots <= 3:
-            raise ValueError("一组识别攻击必须为 1～3 次")
+        if type(self.attack_burst_shots) is not int or self.attack_burst_shots < 1:
+            raise ValueError("attack_burst_shots 必须为正整数，例如 3 或 6")
         if self.patrol_round_trips < 1:
             raise ValueError("底层巡逻往返次数至少为 1")
         if not 0 < self.random_attack_min_seconds <= self.random_attack_max_seconds:
@@ -163,8 +163,10 @@ def load_config(path: str | Path) -> Config:
     source = Path(path)
     raw = json.loads(source.read_text(encoding="utf-8")) if source.exists() else {}
     if raw.get("patrol_policy_version", 1) < 2:
-        # 已有配置通常显式保存了旧版的两次攻击，升级时采用新的三次巡逻策略。
-        raw.update(patrol_policy_version=2, attack_burst_shots=3)
+        # 仅升级旧版默认的两次攻击，保留用户自定义次数（例如六次）。
+        raw["patrol_policy_version"] = 2
+        if type(raw.get("attack_burst_shots")) is int and raw["attack_burst_shots"] == 2:
+            raw["attack_burst_shots"] = 3
     for name in ("bottom", "top"):
         if name in raw:
             raw[name] = Floor(**raw[name])
