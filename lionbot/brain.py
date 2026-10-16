@@ -12,6 +12,7 @@ class Mob:
     score: float = 1.0
     confirmed: bool = True
     recovered: bool = False
+    box: tuple[int, int, int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -43,8 +44,25 @@ class AttackBurst:
 WAIT = Action("wait")
 
 
-def within_attack_height(player_feet, monster_feet, config: Config) -> bool:
-    return player_feet is not None and abs(monster_feet[1] - player_feet[1]) <= config.feet_tolerance_px
+def attack_vertical_bounds(player_feet, config: Config) -> tuple[float, float]:
+    """图像 Y 向下增加；攻击带上端是角色头顶，下端是脚底。"""
+    return player_feet[1] - config.player_height_px, player_feet[1]
+
+
+def monster_vertical_bounds(monster_feet, box=None) -> tuple[float, float]:
+    """头像模板加脚底偏移即可估算身体纵向范围，无需完整身体模板。"""
+    if box is None:
+        return monster_feet[1], monster_feet[1]
+    _, y, _, h = box
+    return min(y, monster_feet[1]), max(y + h - 1, monster_feet[1])
+
+
+def within_attack_height(player_feet, monster_feet, config: Config, box=None) -> bool:
+    if player_feet is None:
+        return False
+    top, bottom = attack_vertical_bounds(player_feet, config)
+    monster_top, monster_bottom = monster_vertical_bounds(monster_feet, box)
+    return monster_bottom >= top and monster_top <= bottom
 
 
 def target_status(mob: Mob, obs: Observation, config: Config, direction: str = "") -> str:
@@ -53,7 +71,7 @@ def target_status(mob: Mob, obs: Observation, config: Config, direction: str = "
     dx = mob.feet[0] - obs.player_feet[0]
     if (direction == "right" and dx < 0) or (direction == "left" and dx > 0):
         return "behind"
-    if not within_attack_height(obs.player_feet, mob.feet, config):
+    if not within_attack_height(obs.player_feet, mob.feet, config, mob.box):
         return "height"
     if not mob.confirmed:
         return "pending"

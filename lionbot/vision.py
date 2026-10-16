@@ -8,7 +8,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .brain import Mob, Observation, target_status
+from .brain import (Mob, Observation, attack_vertical_bounds,
+                    monster_vertical_bounds, target_status)
 from .config import Config
 from .screen_map import ScreenMapper
 
@@ -332,7 +333,7 @@ class Vision:
                 self.strong = [(old, at) for old, at in self.strong
                                if np.hypot(old.feet[0] - d.feet[0], old.feet[1] - d.feet[1]) > 35]
                 self.strong.append((d, now))
-        mobs = tuple(Mob(d.feet, d.score, d.confirmed, d.recovered) for d in self.detections)
+        mobs = tuple(Mob(d.feet, d.score, d.confirmed, d.recovered, d.box) for d in self.detections)
         obs = Observation(position, player, mobs, focused, source)
         self.previous = obs
         return obs
@@ -341,21 +342,31 @@ class Vision:
         output = frame.copy()
         for d in self.detections:
             x, y, w, h = d.box
-            state = target_status(Mob(d.feet, d.score, d.confirmed), obs, self.c, direction)
+            state = target_status(Mob(d.feet, d.score, d.confirmed, d.recovered, d.box), obs, self.c, direction)
             color = TARGET_COLORS[state]
             cv2.rectangle(output, (x, y), (x + w, y + h), color, 1)
+            body_top, body_bottom = monster_vertical_bounds(d.feet, d.box)
+            fx = round(d.feet[0])
+            cv2.line(output, (fx, round(body_top)), (fx, round(body_bottom)), color, 1)
             cv2.circle(output, tuple(map(int, d.feet)), 3, color, -1)
-            dy = f" dY={d.feet[1] - obs.player_feet[1]:+.0f}" if obs.player_feet else ""
+            dy = f" dYf={d.feet[1] - obs.player_feet[1]:+.0f}" if obs.player_feet else ""
             dx = f" dX={d.feet[0] - obs.player_feet[0]:+.0f}" if obs.player_feet else ""
             cv2.putText(output, f"{state.upper()}{'~' if d.recovered else ''}{dx}{dy} {d.score:.2f}",
                         (x, y - 4), 0, .4, color, 1)
         if obs.player_feet:
             x, y = map(int, obs.player_feet)
             reach = round(self.c.attack_range * self.c.world_pixels_per_x)
-            tolerance = round(self.c.feet_tolerance_px)
-            cv2.rectangle(output, (x - reach, y - tolerance), (x + reach, y + tolerance), (255, 0, 255), 1)
+            top, bottom = map(round, attack_vertical_bounds(obs.player_feet, self.c))
+            cv2.rectangle(output, (x - reach, top), (x + reach, bottom), (255, 0, 255), 1)
             cv2.line(output, (x - reach, y), (x + reach, y), (255, 0, 255), 2)
+            cv2.line(output, (x, top), (x, bottom), (255, 0, 255), 1)
             cv2.circle(output, (x, y), 5, (0, 255, 255), 2)
+            if direction in ("left", "right"):
+                center_y = round((top + bottom) / 2)
+                end_x = x + (40 if direction == "right" else -40)
+                cv2.arrowedLine(output, (x, center_y), (end_x, center_y), (255, 0, 255), 1)
+            cv2.putText(output, f"BODY BAND: Y={top}..{bottom} H={self.c.player_height_px:.0f}px MOVE:{direction.upper()}",
+                        (12, output.shape[0] - 60), 0, .4, (255, 0, 255), 1)
         cv2.putText(output, status, (12, output.shape[0] - 15), 0, .5, (0, 255, 255), 1)
         cv2.putText(output, "GREEN: ahead in range | GRAY: height | BLUE: far | RED: behind",
                     (12, output.shape[0] - 38), 0, .45, (230, 230, 230), 1)

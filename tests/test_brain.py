@@ -4,7 +4,8 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from lionbot.brain import Action, Brain, Mob, Observation, target_status
+from lionbot.brain import (Action, Brain, Mob, Observation, attack_vertical_bounds,
+                           monster_vertical_bounds, target_status, within_attack_height)
 from lionbot.config import Config, Floor, load_config
 
 
@@ -82,7 +83,7 @@ class CombatTests(unittest.TestCase):
         self.assertEqual(brain.direction, "right")
 
     def test_height_and_range_still_gate_first_detected_attack(self):
-        for mob in (Mob((450, 477)), Mob((450, 523)), Mob((573, 500))):
+        for mob in (Mob((450, 435)), Mob((450, 523)), Mob((573, 500))):
             with self.subTest(mob=mob):
                 brain = prepared()
                 brain.facing = "right"
@@ -102,6 +103,47 @@ class CombatTests(unittest.TestCase):
         self.assertNotEqual(brain.decide(obs, 1).kind, "attack")
         obs = replace(obs, mobs=(high, Mob((745, 580))))
         self.assertEqual(brain.decide(obs, 2).kind, "attack")
+
+    def test_step_monsters_in_player_body_band_are_attackable_with_head_only_boxes(self):
+        config = replace(Config(), world_pixels_per_x=4000, auto_route=False)
+        # 对照用户截图：角色脚底、较低台阶怪脚底、仅头部的识别框。
+        scenes = [((145, 164), (423, 105), (401, 52, 41, 28)),
+                  ((85, 148), (197, 92), (175, 38, 42, 30)),
+                  ((313, 137), (413, 79), (392, 21, 42, 29)),
+                  ((315, 111), (71, 109), (50, 57, 42, 30))]
+        for player, feet, box in scenes:
+            with self.subTest(player=player, feet=feet):
+                mob = Mob(feet, box=box)
+                obs = observation(feet=player, mobs=[mob])
+                direction = "right" if feet[0] >= player[0] else "left"
+                self.assertTrue(within_attack_height(player, feet, config, box))
+                self.assertEqual(target_status(mob, obs, config, direction), "ready")
+                brain = prepared(config, obs=obs, direction=direction)
+                brain.facing = direction
+                self.assertEqual(brain.decide(obs, 1).kind, "attack")
+
+    def test_vertical_overlap_uses_body_span_instead_of_head_center_or_feet_alone(self):
+        c = replace(Config(), world_pixels_per_x=2000)
+        obs = observation()
+        self.assertEqual(attack_vertical_bounds(obs.player_feet, c), (436, 500))
+        # 头框在攻击带上方，但实际脚底落在角色头顶处，可以命中。
+        head_above = Mob((450, 440), box=(430, 395, 40, 25))
+        self.assertEqual(monster_vertical_bounds(head_above.feet, head_above.box), (395, 440))
+        self.assertEqual(target_status(head_above, obs, c, "right"), "ready")
+        # 怪物脚底稍低，但其身体与攻击带相交，同样通过。
+        lower_body = Mob((450, 520), box=(430, 485, 40, 25))
+        self.assertEqual(target_status(lower_body, obs, c, "right"), "ready")
+        for mob in (Mob((450, 435), box=(430, 390, 40, 25)),
+                    Mob((450, 550), box=(430, 501, 40, 25))):
+            self.assertEqual(target_status(mob, obs, c, "right"), "height")
+        self.assertEqual(target_status(head_above, obs, c, "left"), "behind")
+
+    def test_measured_player_height_controls_vertical_bounds_not_legacy_tolerance(self):
+        c = replace(Config(), player_height_px=50, feet_tolerance_px=999)
+        player = (400, 500)
+        for y, expected in ((449, False), (450, True), (500, True), (501, False)):
+            self.assertEqual(within_attack_height(player, (450, y), c), expected)
+        self.assertFalse(within_attack_height(None, (450, 500), c))
 
     def test_tentative_front_detection_pauses_for_confirmation(self):
         brain = prepared()

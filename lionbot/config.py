@@ -45,7 +45,9 @@ class Config:
     scan_seconds: float = 0.22
     empty_seconds: float = 3.0
     empty_sweeps: int = 2
+    # 旧脚底容差保留用于读取旧配置；攻击带现在使用角色实际身高。
     feet_tolerance_px: float = 22.0
+    player_height_px: float = 64.0
     confirmation_frames: int = 2
     confirmation_gap: float = 0.35
     hurt_recovery_seconds: float = 1.2
@@ -94,6 +96,8 @@ class Config:
             raise ValueError("瞬移最大位移必须在 (0, 1) 内")
         if self.confirmation_frames < 2 or self.empty_sweeps < 1:
             raise ValueError("至少连续两帧确认怪物，至少巡视一个往返")
+        if not 12 <= self.player_height_px <= 512:
+            raise ValueError("角色身高 player_height_px 必须为 12～512 主画面像素")
         if not 0 < self.hurt_threshold <= self.monster_threshold <= 1:
             raise ValueError("受击追踪阈值必须不高于正常识别阈值，且位于 (0, 1]")
         if not 0 < self.confirmation_gap <= self.hurt_recovery_seconds <= 2:

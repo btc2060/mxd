@@ -10,7 +10,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from lionbot.brain import Brain, Mob
+from lionbot.brain import Brain, Mob, target_status
 from lionbot.config import Config
 from lionbot.vision import (Confirmer, Detection, Vision, detect_monsters,
                             make_template, measure_world_scale,
@@ -88,6 +88,24 @@ class VisionTests(unittest.TestCase):
         found = detect_monsters(frame, (0, 0, 42, 44), [make_template(frame, (21, 40))],
                                 excluded_roi=(0, 0, 42, 44))
         self.assertEqual(found, [])
+
+    def test_head_only_template_preserves_box_and_ground_offset_through_attack_filter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frame, config = fixture(root)
+            write_image(root / "lion.png", sprite()[:30])
+            frame[260:304, 414:456] = (190, 50, 10)
+            frame[200:244, 414:456] = sprite()
+            vision = Vision(config, root)
+            vision.observe(frame, now=0)
+            obs = vision.observe(frame, now=.1)
+            self.assertEqual(len(obs.mobs), 1)
+            mob = obs.mobs[0]
+            self.assertEqual(mob.box, (414, 200, 42, 30))
+            self.assertEqual(mob.feet, (435, 240))  # 脚底在头像框下方，未被当成头像中心。
+            self.assertEqual(target_status(mob, obs, config, "right"), "ready")
+            output = vision.draw(frame, obs, "head only", "right")
+            self.assertEqual(tuple(output[200, 414]), (0, 255, 0))
 
     def test_confirmation_survives_short_gap_but_never_emits_missing_target(self):
         confirmer = Confirmer(2)
@@ -217,12 +235,14 @@ class VisionTests(unittest.TestCase):
             obs = vision.observe(frame)
             vision.detections += [Detection((450, 190, 40, 44), (470, 230), .99, True),
                                   Detection((540, 260, 40, 44), (561, 300), .99, True)]
-            obs = replace(obs, mobs=tuple(Mob(d.feet, d.score, d.confirmed) for d in vision.detections))
+            obs = replace(obs, mobs=tuple(Mob(d.feet, d.score, d.confirmed, d.recovered, d.box)
+                                         for d in vision.detections))
             output = vision.draw(frame, obs, "test")
             self.assertEqual(tuple(output[260, 414]), (0, 255, 0))  # 同高、射程内。
             self.assertEqual(tuple(output[190, 450]), (160, 160, 160))  # 高台，不能攻击。
             self.assertEqual(tuple(output[260, 540]), (255, 160, 0))  # 同高，但太远。
-            self.assertEqual(tuple(output[278, 312]), (255, 0, 255))  # 脚底 Y=300 上方 22px。
+            self.assertEqual(tuple(output[236, 312]), (255, 0, 255))  # 脚底 300 到头顶 236。
+            self.assertNotEqual(tuple(output[322, 250]), (255, 0, 255))  # 脚底下不再画对称攻击带。
 
     def test_offline_cli_produces_detection_artifact_without_windows(self):
         from dataclasses import asdict

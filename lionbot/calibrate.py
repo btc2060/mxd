@@ -372,6 +372,33 @@ def calibrate(path: Path, restart: bool = False, reuse_templates: Path | None = 
         cv2.destroyAllWindows()
 
 
+def calibrate_height(path: Path) -> None:
+    """只更新角色身高，保留现有区域、模板、地形参考和地图点位。"""
+    config = load_config(path)
+    window = GameWindow(config.window_title)
+    try:
+        frame = fresh(window, "请在地面站稳，角色完整露出；本次只测身高，不框选怪物或名牌。")
+        if config.frame_size is not None and tuple(frame.shape[1::-1]) != config.frame_size:
+            raise ValueError("客户区分辨率已改变，请恢复原尺寸再测身高")
+        print("在同一张冻结截图中，先点自己的脚底接地处，再点自己的头顶（含帽子，不含特效）。")
+        feet = select_point("1 / Click YOUR FEET on the ground", frame)
+        head = select_point("2 / Click TOP of YOUR HEAD / include hat, not effects", frame)
+        height = feet[1] - head[1]
+        if (not 12 <= height <= min(512, frame.shape[0] / 2)
+                or abs(feet[0] - head[0]) > max(32, height)
+                or not all(0 <= point[0] < frame.shape[1] and 0 <= point[1] < frame.shape[0]
+                           for point in (feet, head))):
+            raise ValueError("身高点位不正确：先点自己脚底，再点同一角色头顶；未修改原配置")
+        updated = replace(config, player_height_px=float(height))
+        updated.validate()
+        save_config(path, updated)
+        print(f"已保存角色身高 {height:.0f}px；攻击带为每帧角色脚底 Y-{height:.0f} 到 Y。"
+              "头像模板、怪物脚底偏移和地图点位保持原值。")
+    finally:
+        window.close()
+        cv2.destroyAllWindows()
+
+
 def measure_teleport(path: Path) -> None:
     config = load_config(path)
     config.require_calibration()

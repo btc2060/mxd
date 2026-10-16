@@ -70,6 +70,8 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
             print(vision.mapper.notice)
         print(f"攻击距离 X={config.attack_range:.4f}，约 {config.attack_range * config.world_pixels_per_x:.0f}px；"
               f"间隔 {config.attack_interval:.1f}s。步行为主，巡逻瞬移至少间隔 {max(12, config.teleport_cooldown):.0f}s。")
+        print(f"攻击高度：角色脚底向上 {config.player_height_px:.0f}px 到头顶；"
+              "怪物头像到标定脚底的身体范围相交即可，BEHIND 表示身后。")
         if run:
             print("有效定位后先按一次 Alt，之后每 190 秒按一次；暂停/失焦后恢复不重复首按。")
         previous_status = ""
@@ -144,6 +146,7 @@ def main(argv=None) -> int:
     group.add_argument("--check-position", action="store_true", help="实时显示小地图 X/Y 和黄点红圈，不要求完成校准")
     group.add_argument("--calibrate-map", action="store_true", help="独立校准底层/顶层边界、Y 和梯子，不重采模板")
     group.add_argument("--calibrate-anchor", action="store_true", help="点击一次脚底，建立黄点与主画面地形对应，不重采名牌/怪物")
+    group.add_argument("--calibrate-height", action="store_true", help="同一截图点角色脚底、头顶，只校准攻击带身高，不重采模板")
     group.add_argument("--apply-map-profile", action="store_true", help="应用已确认 ROI=(24,73,137,103) 的地图实测值及单位换算")
     group.add_argument("--run", action="store_true", help="明确启用按键发送")
     group.add_argument("--observe", action="store_true", help="只观察（默认）")
@@ -159,6 +162,11 @@ def main(argv=None) -> int:
         parser.error("--bottom-only 只能与 --calibrate-map 一起使用")
     path = args.config.resolve()
     try:
+        if args.calibrate_height:
+            from .calibrate import calibrate_height
+
+            calibrate_height(path)
+            return 0
         if args.calibrate_anchor:
             from .screen_map import calibrate_anchor
 

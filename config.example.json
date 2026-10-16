@@ -12,6 +12,7 @@
   "top": {"y": 0.130, "left": 0.045, "right": 0.212},
   "attack_range": 0.086,
   "attack_interval": 0.9,
+  "player_height_px": 64.0,
   "alt_interval": 190.0,
   "teleport_max_dx": null,
   "teleport_cooldown": 12.0,
