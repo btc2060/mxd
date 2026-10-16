@@ -78,7 +78,7 @@ class InputExecutor:
 
     def execute(self, action: Action) -> float:
         motion_key = (action.direction or "up") if action.kind == "climb" else action.direction
-        continuous = action.kind in ("walk", "climb", "drop_walk")
+        continuous = action.kind in ("walk", "climb", "drop_walk", "step_jump")
         if not continuous or self.held != {motion_key}:
             self.stop()
         keep_motion = False
@@ -102,12 +102,12 @@ class InputExecutor:
                 self.delay(0.04)
                 pressed_at = self.press("f")
                 self.delay(0.07)
-            elif action.kind == "grab":
-                self.press("up")
+            elif action.kind in ("grab", "step_jump"):
+                self.press("up" if action.kind == "grab" else action.direction)
                 self.delay(0.04)
                 pressed_at = self.press("space")
                 self.delay(0.10)
-                # 起跳后只松空格，上键必须延续到抓绳验证，不能在帧间松开。
+                # 起跳后只松空格，保留抓绳的上键或台阶返回的水平方向。
                 self.release("space")
             elif action.kind == "climb":
                 pressed_at = self.press(motion_key)

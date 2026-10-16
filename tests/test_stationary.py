@@ -84,8 +84,8 @@ class StationaryTests(unittest.TestCase):
         finally:
             executor.stop()
         self.assertIn("walk", actions)
-        self.assertIn("nudge", actions)
-        self.assertLess(abs(world.x - .3), .012)
+        self.assertNotIn("nudge", actions)
+        self.assertLessEqual(abs(round(world.x * 137) / 137 - .3), 2 / 137)
         self.assertFalse(world.held)
         self.assertFalse({"f", "space", "up", "down"} & {event[1] for event in world.events})
 
@@ -126,19 +126,21 @@ class StationaryTests(unittest.TestCase):
         brain.facing = "right"
         target = obs(mobs=[Mob((550, 500))])
         brain.executed(brain.decide(target, 1), 1, target)
-        kicked = obs(x=.42, feet=None)
+        kicked = obs(x=.42)
         self.assertEqual(brain.decide(kicked, 1.2).kind, "wait")
-        action = brain.decide(kicked, 2)
+        for now in (2, 2.3, 2.6):
+            self.assertEqual(brain.decide(kicked, now).kind, "wait")
+        action = brain.decide(kicked, 2.9)
         self.assertEqual((action.kind, action.direction), ("walk", "left"))
         self.assertIsNone(brain.burst)
-        brain.executed(action, 2, kicked)
+        brain.executed(action, 2.9, kicked)
         near = obs(x=.315, feet=None)
-        nudge = brain.decide(near, 2.1)
-        self.assertEqual((nudge.kind, nudge.direction), ("nudge", "left"))
-        brain.executed(nudge, 2.1, near)
-        for now in (2.2, 2.3):
-            self.assertEqual(brain.decide(target, now).kind, "wait")
-        face = brain.decide(target, 2.4)
+        walk = brain.decide(near, 3.1)
+        self.assertEqual((walk.kind, walk.direction), ("walk", "left"))
+        brain.executed(walk, 3.1, near)
+        for now in (3.2, 3.3):
+            self.assertEqual(brain.decide(obs(), now).kind, "wait")
+        face = brain.decide(target, 3.4)
         self.assertEqual((face.kind, face.direction), ("face", "right"))
         self.assertEqual(brain.burst.shots, 0)
 
@@ -153,7 +155,8 @@ class StationaryTests(unittest.TestCase):
         brain = prepared()
         for now in (1, 2, 10):
             self.assertEqual(brain.decide(obs(feet=None, mobs=[Mob((450, 500))]), now).kind, "wait")
-        self.assertEqual(brain.decide(obs(x=.5, feet=None), 11).kind, "walk")
+        self.assertEqual(brain.decide(obs(x=.5, feet=None), 11).kind, "wait")
+        self.assertEqual(brain.decide(obs(x=.5, feet=None), 11.1).kind, "walk")
 
     def test_recovery_timeout_stops_input_until_manual_return_or_pause_reset(self):
         brain = prepared()
@@ -191,6 +194,256 @@ class StationaryTests(unittest.TestCase):
         c = replace(config(), world_pixels_per_x=9000, attack_range=.9)
         self.assertEqual(target_status(Mob((572, 500)), obs(), c), "ready")
         self.assertEqual(target_status(Mob((573, 500)), obs(), c), "range")
+
+    def test_screenshot_coordinates_stop_within_one_minimap_pixel_without_timeout(self):
+        c = replace(config(), station=(.6778, .7113), minimap_roi=(0, 0, 194, 194))
+        brain = StationaryBrain(c, start_alt=False)
+        for now in (0, .1, .2):
+            brain.decide(obs(x=.6778, y=.7113), now)
+        for now, x in ((1, .6624), (5, .6675)):
+            action = brain.decide(obs(x=x, y=.7113), now)
+            self.assertEqual((action.kind, action.direction), ("walk", "right"))
+        for now in (8, 8.1, 8.2):
+            self.assertEqual(brain.decide(obs(x=.6727, y=.7113), now).kind, "wait")
+        self.assertFalse(brain.return_failed)
+        self.assertFalse(brain.returning)
+        self.assertEqual(brain.home_frames, 3)
+
+    def test_return_progress_and_new_knockbacks_do_not_use_total_six_second_limit(self):
+        brain = prepared()
+        for now, x in ((1, .5), (4, .48), (7, .55), (9, .53), (12, .51), (15, .49)):
+            action = brain.decide(obs(x=x), now)
+            self.assertEqual(action.kind, "walk")
+            self.assertFalse(brain.return_failed)
+        self.assertEqual(brain.decide(obs(x=.49), 21).kind, "wait")
+        self.assertTrue(brain.return_failed)
+
+    def test_return_uses_one_held_direction_until_arrival(self):
+        brain = prepared()
+        clock = Clock()
+        keyboard = Keyboard(clock)
+        executor = InputExecutor(keyboard, brain.c, clock=clock.time, sleep=clock.sleep)
+        for x in (.40, .38, .36, .34, .32, .31):
+            action = brain.decide(obs(x=x), clock.now)
+            self.assertEqual(action.kind, "walk")
+            brain.executed(action, executor.execute(action), obs(x=x))
+        action = brain.decide(obs(x=.305), clock.now)
+        self.assertEqual(action.kind, "wait")
+        executor.execute(action)
+        presses = [event for event in keyboard.events if event[:2] == ("press", "left")]
+        self.assertEqual(len(presses), 1)
+        self.assertFalse(keyboard.held)
+
+    def test_displaced_player_clears_both_sides_before_starting_return(self):
+        brain = prepared()
+        brain.facing = "right"
+        enemies = obs(x=.4, mobs=[Mob((250, 500)), Mob((550, 500))])
+        for now in (1, 2, 3):
+            action = brain.decide(enemies, now)
+            self.assertEqual((action.kind, action.direction), ("attack", "right"))
+            brain.executed(action, now, enemies)
+        face = brain.decide(enemies, 4)
+        self.assertEqual((face.kind, face.direction), ("face", "left"))
+        brain.executed(face, 4, enemies)
+        for now in (4.13, 5.13, 6.13):
+            action = brain.decide(enemies, now)
+            self.assertEqual((action.kind, action.direction), ("attack", "left"))
+            brain.executed(action, now, enemies)
+        for now in (7.1, 7.4, 7.7):
+            self.assertEqual(brain.decide(obs(x=.4), now).kind, "wait")
+        action = brain.decide(obs(x=.4), 8)
+        self.assertEqual((action.kind, action.direction), ("walk", "left"))
+        self.assertFalse(brain.return_failed)
+
+    def test_return_yields_to_new_targets_then_restarts_progress_timer(self):
+        brain = prepared()
+        walk = brain.decide(obs(x=.4), 1)
+        brain.executed(walk, 1, obs(x=.4))
+        enemy = obs(x=.39, mobs=[Mob((350, 500))])
+        for now in (3, 4, 5):
+            action = brain.decide(enemy, now)
+            self.assertEqual((action.kind, action.direction), ("attack", "left"))
+            brain.executed(action, now, enemy)
+            self.assertIsNone(brain.return_started)
+        for now in (6, 6.3, 6.6):
+            self.assertEqual(brain.decide(obs(x=.39), now).kind, "wait")
+        action = brain.decide(obs(x=.39), 6.9)
+        self.assertEqual(action.kind, "walk")
+        self.assertAlmostEqual(brain.return_started, 6.9)
+
+
+class StepRecoveryTests(unittest.TestCase):
+    def test_real_inputs_clear_lower_plants_jump_step_clear_upper_and_return_home(self):
+        c = replace(config(), station=(.6778, .7113), minimap_roi=(0, 0, 194, 194),
+                    bottom=Floor(.7113, None, None))
+
+        class World(Clock, Keyboard):
+            def __init__(self):
+                Clock.__init__(self)
+                Keyboard.__init__(self, self)
+                self.x, self.y, self.motion, self.facing = .74, .78, "lower", "left"
+                self.hp = {"lower": 2, "upper": 2}
+                self.targets = {"lower": .735, "upper": .645}
+                self.jumped_at = 0.
+                self.jumps = self.shots = 0
+                self.kicked = False
+
+            def sleep(self, delay):
+                end = self.now + delay
+                while self.now < end:
+                    dt = min(.005, end - self.now)
+                    self.now += dt
+                    dx = int("right" in self.held) - int("left" in self.held)
+                    self.x += .1 * dt * dx
+                    if self.motion == "lower":
+                        self.x = max(.705, self.x)  # 左侧台阶墙。
+                    elif self.motion == "jump":
+                        elapsed = self.now - self.jumped_at
+                        self.y = .78 - .13 * np.sin(np.pi * min(1, elapsed / .8))
+                        if elapsed > .4 and self.y >= c.station[1] and self.x <= .705:
+                            self.motion, self.y = "upper", c.station[1]
+                        elif elapsed >= .8:
+                            self.motion, self.y = "lower", .78
+
+            def press(self, key):
+                Keyboard.press(self, key)
+                if key in ("left", "right"):
+                    self.facing = key
+                elif key == "space":
+                    self.jumps += 1
+                    if self.motion == "lower" and self.x <= .708 and "left" in self.held:
+                        self.motion, self.jumped_at = "jump", self.now
+                elif key == "d":
+                    if self.motion == "jump" or {"left", "right", "space"} & self.held:
+                        raise AssertionError("空中或移动时插入了攻击")
+                    self.shots += 1
+                    delta = self.targets[self.motion] - self.x
+                    ahead = delta <= .012 if self.facing == "left" else delta >= -.012
+                    if ahead and abs(delta) <= c.attack_reach_px / c.world_pixels_per_x:
+                        self.hp[self.motion] = max(0, self.hp[self.motion] - 1)
+                    if not self.kicked:
+                        self.x += .015
+                        self.kicked = True
+
+            def observe(self, brain):
+                mobs = []
+                if brain.needs_monsters:
+                    for floor, x in self.targets.items():
+                        y = .78 if floor == "lower" else c.station[1]
+                        if self.hp[floor] > 0:
+                            mobs.append(Mob((400 + (x - self.x) * 2000, 500 + (y - self.y) * 1000)))
+                return obs(x=round(self.x * 194) / 194, y=round(self.y * 194) / 194, mobs=mobs)
+
+        world = World()
+        brain = StationaryBrain(c, start_alt=False)
+        executor = InputExecutor(world, c, clock=world.time, sleep=world.sleep)
+        phases, history = set(), []
+        try:
+            while world.now < 40:
+                current = world.observe(brain)
+                action = brain.decide(current, world.now)
+                phases.add(brain.phase)
+                history.append((round(world.now, 2), brain.phase, action.kind, current.position))
+                brain.executed(action, executor.execute(action), current)
+                world.sleep(.03)
+                if (world.hp == {"lower": 0, "upper": 0} and not brain.step_phase and not brain.returning
+                        and brain.home_frames >= 3 and brain.burst is None and not brain.clearing):
+                    break
+            else:
+                self.fail(f"台阶返回循环未完成：HP={world.hp}, {history[-20:]}")
+        finally:
+            executor.stop()
+        self.assertEqual(world.jumps, 1)
+        self.assertEqual(world.shots, 6)
+        self.assertIn("下层先清怪", phases)
+        self.assertIn("左跳返回原平台", phases)
+        self.assertFalse({"f", "up", "down"} & {event[1] for event in world.events})
+        self.assertLessEqual(abs(round(world.x * 194) / 194 - c.station[0]), 2 / 194)
+        self.assertFalse(world.held)
+
+    def lower_ready(self, brain, start=1):
+        lower = obs(x=.38, y=.62)
+        for offset in (0, .1):
+            self.assertEqual(brain.decide(lower, start + offset).kind, "wait")
+        action = brain.decide(lower, start + .21)
+        self.assertEqual((action.kind, action.direction), ("walk", "left"))
+        return lower
+
+    def test_falling_waits_for_stable_height_before_walking_or_attacking(self):
+        brain = prepared()
+        for now, y in ((1, .55), (1.1, .58), (1.2, .61), (1.3, .64)):
+            self.assertEqual(brain.decide(obs(x=.4, y=y, mobs=[Mob((450, 500))]), now).kind, "wait")
+        self.assertEqual(brain.phase, "等待下层落地")
+        self.assertFalse(brain.return_failed)
+
+    def test_second_fall_during_lower_approach_releases_movement_until_stable(self):
+        brain = prepared()
+        self.lower_ready(brain)
+        action = brain.decide(obs(x=.37, y=.66, mobs=[Mob((450, 500))]), 1.5)
+        self.assertEqual(action.kind, "wait")
+        self.assertEqual(brain.step_phase, "landing")
+        self.assertIsNone(brain.burst)
+
+    def test_wall_jump_preserves_left_then_reconfirms_home_platform(self):
+        brain = prepared()
+        self.lower_ready(brain)
+        wall = obs(x=.34, y=.62)
+        self.assertEqual(brain.decide(wall, 1.4).kind, "walk")
+        jump = brain.decide(wall, 1.81)
+        self.assertEqual((jump.kind, jump.direction), ("step_jump", "left"))
+        brain.executed(jump, 1.85, wall)
+        for now, y in ((2.05, .57), (2.25, .49), (2.45, .46), (2.62, .5), (2.73, .5)):
+            self.assertEqual(brain.decide(obs(x=.32, y=y), now).kind, "walk")
+        self.assertEqual(brain.decide(obs(x=.32), 2.84).kind, "wait")
+        self.assertEqual(brain.step_phase, "")
+        self.assertFalse(brain.off_platform)
+        self.assertFalse(brain.return_failed)
+
+    def test_lower_platform_is_cleared_before_approaching_step(self):
+        brain = prepared()
+        brain.facing = "left"
+        enemies = obs(x=.38, y=.62, mobs=[Mob((350, 500))])
+        for now in (1, 1.1):
+            self.assertEqual(brain.decide(enemies, now).kind, "wait")
+        for now in (1.21, 2.21, 3.21):
+            action = brain.decide(enemies, now)
+            self.assertEqual(action.kind, "attack")
+            brain.executed(action, now, enemies)
+        for now in (4.2, 4.5, 4.8):
+            self.assertEqual(brain.decide(obs(x=.38, y=.62), now).kind, "wait")
+        action = brain.decide(obs(x=.38, y=.62), 5.1)
+        self.assertEqual((action.kind, action.direction), ("walk", "left"))
+        self.assertEqual(brain.step_attempts, 0)
+
+    def test_unconfirmed_jumps_are_bounded_and_do_not_pretend_to_reach_home(self):
+        brain = prepared()
+        self.lower_ready(brain)
+        wall = obs(x=.34, y=.62)
+        brain.decide(wall, 1.4)
+        now = 1.81
+        for attempt in range(1, 4):
+            jump = brain.decide(wall, now)
+            self.assertEqual(jump.kind, "step_jump")
+            brain.executed(jump, now, wall)
+            self.assertEqual(brain.step_attempts, attempt)
+            self.assertEqual(brain.decide(wall, now + 1.21).kind, "wait")
+            for offset in (1.31, 1.42):
+                brain.decide(wall, now + offset)
+            now += 1.83
+        action = brain.decide(wall, now)
+        self.assertEqual(action.kind, "wait")
+        self.assertEqual(brain.step_phase, "blocked")
+
+    def test_wrong_or_disabled_route_stops_instead_of_walking_left_forever(self):
+        brain = prepared()
+        self.lower_ready(brain)
+        action = brain.decide(obs(x=.2, y=.62), 2)
+        self.assertEqual(action.kind, "wait")
+        self.assertEqual(brain.step_phase, "blocked")
+        brain = prepared()
+        brain.c = replace(brain.c, station_step_recovery=False)
+        self.assertEqual(brain.decide(obs(x=.4, y=.62), 1).kind, "wait")
+        self.assertEqual(brain.step_phase, "")
 
 
 def plant_sprite():

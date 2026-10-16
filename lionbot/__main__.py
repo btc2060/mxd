@@ -69,7 +69,10 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
         print("F8 暂停/恢复，F12 退出。请将游戏置于前台；失焦立即停止输入。")
         if config.behavior == "stationary":
             print(f"散步路2定点：X={config.station[0]:.4f}，Y={config.station[1]:.4f}；左右识别{config.monster_name}。")
-            print(f"每组 {config.attack_burst_shots} 次，被击退后按黄点回位、站稳再攻击；无巡逻、爬绳、F 或随机攻击。")
+            print(f"每组 {config.attack_burst_shots} 次，被击退后先就地清理两侧，清完再连续步行回位；无巡逻、爬绳、F 或随机攻击。")
+            print(f"回位连续 {config.station_recover_timeout:g} 秒没有靠近目标才暂停，战斗时间不计入。")
+            if config.station_step_recovery:
+                print(f"右侧台阶返回：等下层落地→清怪→连续向左走→受阻后左＋空格；最多 {config.station_step_max_attempts} 次。")
             print(f"像素射程 {config.attack_reach_px:.0f}px，攻击间隔至少 {config.attack_interval:.1f}s。")
         else:
             print(f"黄点导航，停步清理身前身后；底层 {config.patrol_round_trips} 个完整往返后沿途清怪去梯子。")

@@ -140,6 +140,24 @@ class ControlTests(unittest.TestCase):
             self.executor.execute(Action("grab", "up"))
         self.assertEqual(self.keyboard.held, set())
 
+    def test_step_jump_holds_left_and_space_then_keeps_left_without_up_or_f(self):
+        self.executor.execute(Action("walk", "left"))
+        self.executor.execute(Action("step_jump", "left"))
+        space = next(e for e in self.keyboard.events if e[:2] == ("press", "space"))
+        self.assertEqual(space[2], {"left"})
+        self.assertEqual(self.keyboard.held, {"left"})
+        self.executor.execute(Action("walk", "left"))
+        self.assertEqual(sum(e[:2] == ("press", "left") for e in self.keyboard.events), 1)
+        self.executor.execute(Action("wait"))
+        self.assertEqual(self.keyboard.held, set())
+        self.assertFalse({"up", "f"} & {e[1] for e in self.keyboard.events})
+
+    def test_step_jump_focus_loss_releases_left_and_space(self):
+        self.executor.active = lambda: self.clock.now < .08
+        with self.assertRaises(InputCancelled):
+            self.executor.execute(Action("step_jump", "left"))
+        self.assertEqual(self.keyboard.held, set())
+
     def test_nudge_is_short_direction_pulse_without_f_or_jump_and_releases(self):
         self.executor.execute(Action("nudge", "left"))
         self.assertEqual([e[:2] for e in self.keyboard.events], [("press", "left"), ("release", "left")])

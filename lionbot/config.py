@@ -22,7 +22,11 @@ class Config:
     monster_name: str = "蓝独角狮"
     station: tuple[float, float] | None = None
     station_tolerance: float = 0.008
+    # 定点回位连续多久未向目标取得进展才暂停，不是整个回位过程的总时限。
     station_recover_timeout: float = 6.0
+    station_step_recovery: bool = True
+    station_step_max_attempts: int = 3
+    station_step_timeout: float = 15.0
     window_title: str = "冒险岛怀旧服"
     # 以下 ROI 均为游戏客户区像素坐标 [x, y, width, height]。
     minimap_roi: tuple[int, int, int, int] | None = None
@@ -103,6 +107,9 @@ class Config:
             raise ValueError("定点 station 必须为小地图归一化坐标 [X, Y]")
         if not 0 < self.station_tolerance <= .05 or self.station_recover_timeout <= 0:
             raise ValueError("定点 X 容差必须为 (0, 0.05]，回位超时必须为正数")
+        if (type(self.station_step_recovery) is not bool or type(self.station_step_max_attempts) is not int
+                or not 1 <= self.station_step_max_attempts <= 5 or self.station_step_timeout <= 0):
+            raise ValueError("台阶返回开关必须为布尔值，尝试次数为 1～5，超时必须为正数")
         if self.behavior == "stationary" and self.auto_route:
             raise ValueError("定点模式需要 auto_route=false，使用独立地图配置")
         if self.attack_range_px is not None and not 0 < self.attack_range_px <= 4096:
