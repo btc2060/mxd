@@ -77,10 +77,11 @@ class InputExecutor:
             self.sleep(max(0.0, min(0.01, end - self.clock())))
 
     def execute(self, action: Action) -> float:
-        motion_key = "up" if action.kind == "climb" else action.direction
-        if action.kind not in ("walk", "climb") or self.held != {motion_key}:
+        motion_key = (action.direction or "up") if action.kind == "climb" else action.direction
+        continuous = action.kind in ("walk", "climb", "drop_walk")
+        if not continuous or self.held != {motion_key}:
             self.stop()
-        keep_walking = False
+        keep_motion = False
         pressed_at = self.clock()
         try:
             self.check()
@@ -92,7 +93,7 @@ class InputExecutor:
                 self.delay(0.10)
             elif action.kind in ("walk", "face"):
                 pressed_at = self.press(action.direction)
-                self.delay(0.025 if action.kind == "face" else 0.06)
+                self.delay(self.c.face_hold if action.kind == "face" else 0.06)
             elif action.kind == "nudge":
                 pressed_at = self.press(action.direction)
                 self.delay(self.c.ladder_nudge_seconds)
@@ -106,8 +107,10 @@ class InputExecutor:
                 self.delay(0.04)
                 pressed_at = self.press("space")
                 self.delay(0.10)
+                # 起跳后只松空格，上键必须延续到抓绳验证，不能在帧间松开。
+                self.release("space")
             elif action.kind == "climb":
-                pressed_at = self.press("up")
+                pressed_at = self.press(motion_key)
                 self.delay(0.07)
             elif action.kind == "climb_exit":
                 pressed_at = self.press("space")
@@ -117,12 +120,12 @@ class InputExecutor:
                 self.delay(0.08)
             elif action.kind not in ("wait", "scan"):
                 raise ValueError(f"未知动作：{action.kind}")
-            if action.kind in ("walk", "climb"):
+            if continuous or action.kind == "grab":
                 self.check()
                 with self.lock:
                     self.hold_deadline = self.clock() + .25
-                keep_walking = True
+                keep_motion = True
             return pressed_at
         finally:
-            if not keep_walking:
+            if not keep_motion:
                 self.stop()

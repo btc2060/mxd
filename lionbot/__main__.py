@@ -20,8 +20,6 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
     require_windows()
     from pynput.keyboard import Key, Listener
 
-    if run and mode == "auto" and config.auto_route and config.teleport_max_dx is None:
-        raise ValueError("自动换层需要 --measure-teleport；也可先 --floor bottom --run 仅测试底层步行识别")
     window = GameWindow(config.window_title)
     stopped, paused = threading.Event(), threading.Event()
     executor = None
@@ -67,7 +65,10 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
         print(f"黄点导航，停步清理身前身后；底层 {config.patrol_round_trips} 个完整往返后沿途清怪去梯子。")
         print(f"每组最多 {config.attack_burst_shots} 次，周围仍有目标就继续；"
               f"连续 {config.clear_frames} 帧且至少 {config.clear_seconds:.1f}s 无候选后恢复原路线。")
-        print(f"爬绳入口：清怪→短按微调→连续对齐→抓绳→持续 Y 上升确认；最多尝试 {config.ladder_max_attempts} 次。")
+        print(f"爬绳入口：清怪→微调→对齐→上＋空格并保持上→验证上升；最多尝试 {config.ladder_max_attempts} 次。")
+        print("爬绳和下落期间不插入攻击、随机瞬移或 Alt；上爬卡住时先沿绳下返再重试。")
+        if config.teleport_max_dx is None:
+            print("未测量瞬移：全程使用步行；顶层离绳后向左走开，不影响自动上下楼。")
         if vision.mapper.notice:
             print(vision.mapper.notice)
         print(f"攻击距离 X={config.attack_range:.4f}，约 {config.attack_range * config.world_pixels_per_x:.0f}px；"
@@ -93,7 +94,7 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
                 time.sleep(.05)
                 continue
             frame = window.capture()
-            obs = vision.observe(frame, focused=window.focused())
+            obs = vision.observe(frame, focused=window.focused(), track_mobs=brain.needs_monsters)
             action = brain.decide(obs, time.monotonic())
             if obs.location_source == "unmapped" and previous_source != "unmapped":
                 print("主画面位置暂未定位，黄点仍有效；爬绳前需等待有效画面确认清怪。"
@@ -106,7 +107,7 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
                       f"ready={ready} height={height} recovered={sum(m.recovered for m in obs.mobs)} "
                       f"screen={obs.location_source} laps={brain.completed_round_trips}/{config.patrol_round_trips} "
                       f"move={brain.direction} face={brain.facing or '?'} clear={int(brain.clearing)} "
-                      f"route={brain.route or '-'} grabs={brain.grab_attempts} "
+                      f"phase={brain.phase} route={brain.route or '-'} grabs={brain.grab_attempts} "
                       f"{action.kind}:{action.direction}")
             if action.reason != previous_status or loop_start - last_log >= 2:
                 print(f"{status} | {action.reason}")

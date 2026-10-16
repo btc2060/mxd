@@ -36,6 +36,7 @@ class Config:
     attack_range: float = 0.086
     attack_interval: float = 0.9
     attack_hold: float = 0.08
+    face_hold: float = 0.08
     alt_interval: float = 190.0
     teleport_max_dx: float | None = None
     teleport_cooldown: float = 12.0
@@ -98,6 +99,8 @@ class Config:
                 raise ValueError("ROI 必须为 [x, y, width, height]")
         if not 0 < self.attack_hold < self.attack_interval or self.attack_interval < 0.9:
             raise ValueError("攻击间隔至少 0.9 秒，按住时间必须小于间隔")
+        if not .03 <= self.face_hold <= .2:
+            raise ValueError("转身按键 face_hold 必须为 0.03～0.2 秒")
         if self.alt_interval <= 0 or not 0 < self.attack_range <= 1:
             raise ValueError("Alt 周期和攻击距离必须为正数")
         if self.world_pixels_per_x is not None and self.world_pixels_per_x <= 0:

@@ -278,7 +278,8 @@ class Vision:
             self.locator.feet = None
             self.locator.full_at = float("-inf")
 
-    def observe(self, frame: np.ndarray, focused: bool = True, now: float | None = None) -> Observation:
+    def observe(self, frame: np.ndarray, focused: bool = True, now: float | None = None,
+                track_mobs: bool = True) -> Observation:
         now = time.monotonic() if now is None else now
         if tuple(frame.shape[1::-1]) != self.c.frame_size:
             raise ValueError("客户区分辨率已改变，请恢复原尺寸或重新校准")
@@ -286,9 +287,9 @@ class Vision:
         if not focused or position is None:
             self.reset()
             return Observation(position, None, focused=focused, location_source="unmapped")
-        found = detect_monsters(frame, self.c.combat_roi, self.templates,
-                                self.c.monster_threshold, self.c.edge_threshold,
-                                excluded_roi=self.c.minimap_roi)
+        found = (detect_monsters(frame, self.c.combat_roi, self.templates,
+                                 self.c.monster_threshold, self.c.edge_threshold,
+                                 excluded_roi=self.c.minimap_roi) if track_mobs else [])
         moving_boxes = [d.box for d in found]
         player = self.mapper.locate(frame, position, moving_boxes)
         source = "terrain" if player is not None else "unmapped"
@@ -297,6 +298,14 @@ class Vision:
             if visual is not None:
                 player, source = visual, "nameplate"
                 self.mapper.seed(frame, position, player, moving_boxes)
+        if not track_mobs:
+            # 绳上/空中只需黄点和地形跟踪，避免全图怪物匹配拖慢上下键续按。
+            # 回到地面必须重新连续确认，不复用爬绳前的目标。
+            self.confirmer.reset()
+            self.strong = []
+            self.detections = []
+            self.previous = Observation(position, player, focused=focused, location_source=source)
+            return self.previous
         shift = (0.0, 0.0)
         if self.previous is not None:
             if abs(position[1] - self.previous.position[1]) > self.c.floor_tolerance:

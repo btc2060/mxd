@@ -112,9 +112,33 @@ class ControlTests(unittest.TestCase):
         self.executor.execute(Action("grab", "up"))
         space = next(e for e in self.keyboard.events if e[:2] == ("press", "space"))
         self.assertEqual(space[2], {"up"})
+        self.assertEqual(self.keyboard.held, {"up"})
+        self.executor.execute(Action("climb", "up"))
+        self.assertFalse(any(e[:2] == ("release", "up") for e in self.keyboard.events))
         self.keyboard.events = []
         self.executor.execute(Action("climb_exit"))
         self.assertEqual([e[1] for e in self.keyboard.events if e[0] == "press"], ["space"])
+
+    def test_face_holds_direction_long_enough_then_releases_before_attack(self):
+        self.executor.execute(Action("face", "left"))
+        self.assertAlmostEqual(self.clock.now, self.executor.c.face_hold)
+        self.assertEqual(self.keyboard.held, set())
+        self.executor.execute(Action("attack", "left"))
+        attack = next(e for e in self.keyboard.events if e[:2] == ("press", "d"))
+        self.assertEqual(attack[2], set())
+
+    def test_descent_holds_down_instead_of_up_and_guard_can_release_it(self):
+        self.executor.execute(Action("climb", "down"))
+        self.assertEqual(self.keyboard.held, {"down"})
+        self.clock.sleep(.251)
+        self.executor.guard_once()
+        self.assertEqual(self.keyboard.held, set())
+
+    def test_grab_focus_loss_releases_up_and_space(self):
+        self.executor.active = lambda: self.clock.now < .08
+        with self.assertRaises(InputCancelled):
+            self.executor.execute(Action("grab", "up"))
+        self.assertEqual(self.keyboard.held, set())
 
     def test_nudge_is_short_direction_pulse_without_f_or_jump_and_releases(self):
         self.executor.execute(Action("nudge", "left"))

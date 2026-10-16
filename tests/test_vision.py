@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from dataclasses import replace
 from pathlib import Path
 
@@ -55,6 +56,23 @@ def fixture(root):
 
 
 class VisionTests(unittest.TestCase):
+    def test_navigation_frames_skip_monster_matching_and_clear_stale_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frame, config = fixture(root)
+            vision = Vision(config, root)
+            vision.observe(frame, now=1)
+            self.assertTrue(vision.observe(frame, now=1.1).mobs[0].confirmed)
+            with patch("lionbot.vision.detect_monsters") as detect:
+                nav = vision.observe(frame, now=2, track_mobs=False)
+            detect.assert_not_called()
+            self.assertIsNotNone(nav.position)
+            self.assertEqual(nav.mobs, ())
+            self.assertEqual(vision.detections, [])
+            self.assertEqual(vision.strong, [])
+            self.assertFalse(vision.observe(frame, now=2.1).mobs[0].confirmed)
+            self.assertTrue(vision.observe(frame, now=2.2).mobs[0].confirmed)
+
     def test_yellow_point_and_red_other_player_are_distinct(self):
         frame = np.zeros((100, 160, 3), np.uint8)
         cv2.rectangle(frame, (28, 73), (32, 77), (0, 255, 255), -1)
