@@ -22,7 +22,8 @@ class ScreenReference:
 class ScreenMapper:
     def __init__(self, config: Config, root: Path, load_saved: bool = True):
         self.c = config
-        self.orb = cv2.ORB_create(nfeatures=1600, edgeThreshold=12, fastThreshold=14)
+        self.orb = cv2.ORB_create(nfeatures=800 if config.behavior == "stationary" else 1600,
+                                 edgeThreshold=12, fastThreshold=14)
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
         self.references: list[ScreenReference] = []
         self.last: ScreenReference | None = None
@@ -57,8 +58,15 @@ class ScreenMapper:
         mask[y:y + h, x:x + w] = 0
         for x, y, w, h in excluded_boxes:
             mask[max(0, y - 8):y + h + 8, max(0, x - 8):x + w + 8] = 0
-        points, descriptors = self.orb.detectAndCompute(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), mask)
-        return np.float32([p.pt for p in points]).reshape(-1, 2), descriptors
+        image = frame
+        if self.c.behavior == "stationary" and frame.shape[1] > 640:
+            size = (640, round(frame.shape[0] * 640 / frame.shape[1]))
+            image = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
+            mask = cv2.resize(mask, size, interpolation=cv2.INTER_NEAREST)
+        points, descriptors = self.orb.detectAndCompute(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), mask)
+        # 参考文件和后续脚底换算仍使用原图像素，已有校准可以直接复用。
+        scale = np.float32((frame.shape[1] / image.shape[1], frame.shape[0] / image.shape[0]))
+        return np.float32([p.pt for p in points]).reshape(-1, 2) * scale, descriptors
 
     def remember(self, reference: ScreenReference) -> None:
         self.last = reference

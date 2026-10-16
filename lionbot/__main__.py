@@ -26,6 +26,7 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
     listener = None
     guard = None
     preview_open = False
+    original_threads = cv2.getNumThreads()
     preview_title = ("Plant" if config.behavior == "stationary" else "Blue lion") + " detector / F8 pause / F12 exit"
 
     def preview_events():
@@ -40,6 +41,8 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
                 stopped.set()
 
     try:
+        if config.behavior == "stationary":
+            cv2.setNumThreads(1)
         vision = Vision(config, root)
         if config.behavior == "stationary":
             from .stationary import StationaryBrain
@@ -74,6 +77,13 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
             if config.station_step_recovery:
                 print(f"右侧台阶返回：等下层落地→清怪→连续向左走→受阻后左＋空格；最多 {config.station_step_max_attempts} 次。")
             print(f"像素射程 {config.attack_reach_px:.0f}px，攻击间隔至少 {config.attack_interval:.1f}s。")
+            print(f"局部识别：左右射程 × 角色身高，{config.stationary_fps:g} 帧/秒；模板自动支持镜像朝向。")
+            if vision.color_detector is not None:
+                if vision.color_detector.models:
+                    print(f"颜色补识别已启用：花头轮廓＋邻近绿叶＋样本尺寸，"
+                          f"连续 {max(config.confirmation_frames, config.plant_color_frames)} 帧确认。预览标记 COLOR。")
+                else:
+                    print("现有模板没有可用的棕色花头，继续模板识别；可补采清晰花头和邻近绿叶以启用颜色补识别。")
         else:
             print(f"黄点导航，停步清理身前身后；底层 {config.patrol_round_trips} 个完整往返后沿途清怪去梯子。")
             print(f"每组最多 {config.attack_burst_shots} 次，周围仍有目标就继续；"
@@ -146,7 +156,8 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
                 direction = brain.facing if config.behavior == "stationary" else brain.direction
                 cv2.imshow(preview_title, vision.draw(frame, obs, status, direction))
                 preview_events()
-            time.sleep(max(.001, 1 / 15 - (time.monotonic() - loop_start)))
+            fps = config.stationary_fps if config.behavior == "stationary" else 15
+            time.sleep(max(.001, 1 / fps - (time.monotonic() - loop_start)))
     finally:
         stopped.set()
         if executor:
@@ -157,6 +168,8 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
             listener.stop()
         window.close()
         cv2.destroyAllWindows()
+        if config.behavior == "stationary":
+            cv2.setNumThreads(original_threads)
 
 
 def main(argv=None) -> int:

@@ -27,6 +27,9 @@ class Config:
     station_step_recovery: bool = True
     station_step_max_attempts: int = 3
     station_step_timeout: float = 15.0
+    stationary_fps: float = 10.0
+    plant_color_fallback: bool = True
+    plant_color_frames: int = 3
     window_title: str = "冒险岛怀旧服"
     # 以下 ROI 均为游戏客户区像素坐标 [x, y, width, height]。
     minimap_roi: tuple[int, int, int, int] | None = None
@@ -103,6 +106,9 @@ class Config:
     def validate(self) -> None:
         if self.behavior not in ("patrol", "stationary"):
             raise ValueError("behavior 只能是 patrol 或 stationary")
+        if (not 5 <= self.stationary_fps <= 20 or type(self.plant_color_fallback) is not bool
+                or type(self.plant_color_frames) is not int or not 2 <= self.plant_color_frames <= 10):
+            raise ValueError("定点帧率为 5～20，颜色补识别开关为布尔值，确认帧数为 2～10")
         if self.station is not None and (len(self.station) != 2 or not all(0 <= v <= 1 for v in self.station)):
             raise ValueError("定点 station 必须为小地图归一化坐标 [X, Y]")
         if not 0 < self.station_tolerance <= .05 or self.station_recover_timeout <= 0:

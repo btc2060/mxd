@@ -9,8 +9,9 @@ import cv2
 import numpy as np
 
 from .brain import (Mob, Observation, attack_vertical_bounds,
-                    monster_vertical_bounds, target_status)
+                    monster_vertical_bounds, target_status, within_attack_height)
 from .config import Config
+from .plant_vision import PlantColorDetector, attack_search_roi, intersect_roi
 from .screen_map import ScreenMapper
 
 
@@ -65,6 +66,7 @@ class Detection:
     confirmed: bool = False
     hits: int = 1
     recovered: bool = False
+    source: str = "template"
 
 
 @dataclass(frozen=True)
@@ -105,7 +107,7 @@ def overlap(a, b) -> float:
 
 def suppress_duplicates(found: list[Detection]) -> list[Detection]:
     kept = []
-    for candidate in sorted(found, key=lambda d: d.score, reverse=True):
+    for candidate in sorted(found, key=lambda d: (d.source != "color", d.score), reverse=True):
         if all(overlap(candidate.box, other.box) < 0.25 and
                np.hypot(candidate.feet[0] - other.feet[0], candidate.feet[1] - other.feet[1]) > 20
                for other in kept):
@@ -159,9 +161,10 @@ def detect_monsters(frame: np.ndarray, roi, templates: list[Template],
 class Confirmer:
     """只输出当前帧命中；短暂漏检保留确认历史，不生成幽灵检测。"""
 
-    def __init__(self, frames: int = 2, gap: float = .35):
+    def __init__(self, frames: int = 2, gap: float = .35, color_frames: int = 3):
         self.frames = frames
         self.gap = gap
+        self.color_frames = max(frames, color_frames)
         self.previous: list[Detection] = []
         self.history: list[tuple[Detection, float]] = []
 
@@ -175,9 +178,11 @@ class Confirmer:
             if nearest is not None and np.hypot(nearest[0].feet[0] - item.feet[0], nearest[0].feet[1] - item.feet[1]) <= 35:
                 hits = nearest[0].hits + 1
                 available.remove(nearest)
-            result.append(replace(item, hits=hits, confirmed=item.confirmed or hits >= self.frames))
+            required = self.color_frames if item.source == "color" else self.frames
+            result.append(replace(item, hits=hits, confirmed=item.confirmed or hits >= required))
         self.previous = result
-        self.history = available + [(d, now) for d in result]
+        # 颜色候选必须逐帧出现；不能靠时断时续的棕色背景累加成确认。
+        self.history = [(d, at) for d, at in available if d.source != "color"] + [(d, now) for d in result]
         return result
 
     def reset(self) -> None:
@@ -215,8 +220,8 @@ class PlayerLocator:
         self.feet = None
         self.full_at = float("-inf")
 
-    def locate(self, frame: np.ndarray, now: float):
-        feet = locate_player(frame, self.c.combat_roi, self.template,
+    def locate(self, frame: np.ndarray, now: float, roi=None):
+        feet = locate_player(frame, roi or self.c.combat_roi, self.template,
                              self.c.player_feet_offset, self.c.player_threshold)
         if feet is not None:
             self.feet, self.full_at = feet, now
@@ -263,20 +268,56 @@ class Vision:
             except (ValueError, OSError):
                 pass  # 名牌仅作可选辅助，不能阻止黄点导航和怪物识别。
         self.templates = load_templates(root / config.template_manifest)
+        self.color_detector = (PlantColorDetector(self.templates)
+                               if config.behavior == "stationary" and config.plant_color_fallback else None)
         self.mapper = ScreenMapper(config, root)
-        self.confirmer = Confirmer(config.confirmation_frames, config.confirmation_gap)
+        self.confirmer = Confirmer(config.confirmation_frames, config.confirmation_gap, config.plant_color_frames)
         self.detections: list[Detection] = []
         self.strong: list[tuple[Detection, float]] = []
         self.previous: Observation | None = None
+        self.search_roi = None
+        self.full_name_at = float("-inf")
+        self.mapper_seed_at = float("-inf")
 
     def reset(self) -> None:
         self.confirmer.reset()
         self.detections = []
         self.strong = []
         self.previous = None
+        self.search_roi = None
+        self.full_name_at = self.mapper_seed_at = float("-inf")
         if self.locator is not None:
             self.locator.feet = None
             self.locator.full_at = float("-inf")
+
+    def locate_stationary(self, frame, position, now):
+        # 正常情况下只匹配角色名牌附近的小块；名牌缺失仍用地形定位。
+        visual = None
+        if self.locator is not None:
+            predicted = self.locator.feet
+            if predicted is None and self.mapper.last is not None:
+                reference = self.mapper.last
+                scale = self.c.world_pixels_per_x
+                predicted = (reference.feet[0] + (position[0] - reference.position[0]) * scale,
+                             reference.feet[1] + (position[1] - reference.position[1]) * scale
+                             * self.c.minimap_roi[3] / self.c.minimap_roi[2])
+            if predicted is not None:
+                ox, oy = self.c.player_feet_offset
+                h, w = self.player_template.shape[:2]
+                roi = intersect_roi((max(0, round(predicted[0] - ox - 60)),
+                                     max(0, round(predicted[1] - oy - 45)), w + 120, h + 90), self.c.combat_roi)
+                if roi is not None:
+                    visual = self.locator.locate(frame, now, roi)
+            if visual is None and now - self.full_name_at >= .5:
+                self.full_name_at = now
+                visual = self.locator.locate(frame, now)
+        if visual is not None:
+            if now - self.mapper_seed_at >= .75:
+                self.mapper.seed(frame, position, visual, [d.box for d in self.detections])
+                self.mapper_seed_at = now
+            return visual, "nameplate"
+        player = self.mapper.locate(frame, position, [d.box for d in self.detections])
+        return player, "terrain" if player is not None else "unmapped"
 
     def observe(self, frame: np.ndarray, focused: bool = True, now: float | None = None,
                 track_mobs: bool = True) -> Observation:
@@ -287,18 +328,38 @@ class Vision:
         if not focused or position is None:
             self.reset()
             return Observation(position, None, focused=focused, location_source="unmapped")
-        found = (detect_monsters(frame, self.c.combat_roi, self.templates,
+        stationary = self.c.behavior == "stationary"
+        if stationary:
+            player, source = self.locate_stationary(frame, position, now)
+            self.search_roi = attack_search_roi(player, self.c, self.templates) if track_mobs else None
+        else:
+            self.search_roi = self.c.combat_roi if track_mobs else None
+        found = (detect_monsters(frame, self.search_roi, self.templates,
                                  self.c.monster_threshold, self.c.edge_threshold,
                                  excluded_roi=self.c.minimap_roi,
-                                 blue_lion_colors=self.c.behavior == "patrol") if track_mobs else [])
-        moving_boxes = [d.box for d in found]
-        player = self.mapper.locate(frame, position, moving_boxes)
-        source = "terrain" if player is not None else "unmapped"
-        if player is None:
-            visual = self.locator.locate(frame, now) if self.locator is not None else None
-            if visual is not None:
-                player, source = visual, "nameplate"
-                self.mapper.seed(frame, position, player, moving_boxes)
+                                 blue_lion_colors=not stationary) if self.search_roi is not None else [])
+        if not stationary:
+            moving_boxes = [d.box for d in found]
+            player = self.mapper.locate(frame, position, moving_boxes)
+            source = "terrain" if player is not None else "unmapped"
+            if player is None:
+                visual = self.locator.locate(frame, now) if self.locator is not None else None
+                if visual is not None:
+                    player, source = visual, "nameplate"
+                    self.mapper.seed(frame, position, player, moving_boxes)
+        elif self.color_detector is not None and self.search_roi is not None:
+            found.extend(Detection(d.box, d.feet, d.score, source="color")
+                         for d in self.color_detector.detect(frame, self.search_roi, self.c.minimap_roi))
+
+        def in_attack_band(d):
+            return (player is not None and abs(d.feet[0] - player[0]) <= self.c.attack_reach_px
+                    and within_attack_height(player, d.feet, self.c, d.box))
+
+        if stationary:
+            found = [d for d in found if in_attack_band(d)]
+            if player is None:
+                self.confirmer.reset()
+                self.strong = []
         if not track_mobs:
             # 绳上/空中只需黄点和地形跟踪，避免全图怪物匹配拖慢上下键续按。
             # 回到地面必须重新连续确认，不复用爬绳前的目标。
@@ -320,8 +381,10 @@ class Vision:
         self.strong = [(shift_detection(d, *shift), at) for d, at in self.strong
                        if now - at <= self.c.hurt_recovery_seconds]
         # 低阈值只在已确认怪物附近使用；受击匹配不延长正常姿态的有效期。
-        rx, ry, rw, rh = self.c.combat_roi
+        rx, ry, rw, rh = self.search_roi or (0, 0, 0, 0)
         for seed, _ in self.strong:
+            if stationary and not in_attack_band(seed):
+                continue
             if any(np.hypot(seed.feet[0] - d.feet[0], seed.feet[1] - d.feet[1]) <= 35 for d in found):
                 continue
             sx, sy, sw, sh = seed.box
@@ -333,13 +396,14 @@ class Vision:
                                     self.c.hurt_threshold, min(.30, self.c.edge_threshold),
                                     excluded_roi=self.c.minimap_roi,
                                     blue_lion_colors=self.c.behavior == "patrol")
-            local = [d for d in local if np.hypot(seed.feet[0] - d.feet[0], seed.feet[1] - d.feet[1]) <= 45]
+            local = [d for d in local if np.hypot(seed.feet[0] - d.feet[0], seed.feet[1] - d.feet[1]) <= 45
+                     and (not stationary or in_attack_band(d))]
             if local:
                 best = max(local, key=lambda d: d.score)
                 found.append(replace(best, recovered=True, confirmed=True))
         self.detections = self.confirmer.update(suppress_duplicates(found), now, shift)
         for d in self.detections:
-            if d.confirmed and not d.recovered:
+            if d.confirmed and not d.recovered and d.source != "color":
                 self.strong = [(old, at) for old, at in self.strong
                                if np.hypot(old.feet[0] - d.feet[0], old.feet[1] - d.feet[1]) > 35]
                 self.strong.append((d, now))
@@ -350,6 +414,10 @@ class Vision:
 
     def draw(self, frame: np.ndarray, obs: Observation, status: str, direction: str = "") -> np.ndarray:
         output = frame.copy()
+        if self.c.behavior == "stationary" and self.search_roi is not None:
+            x, y, w, h = self.search_roi
+            cv2.rectangle(output, (x, y), (x + w, y + h), (255, 255, 0), 1)
+            cv2.putText(output, f"LOCAL SEARCH {w}x{h}", (x, max(12, y - 8)), 0, .4, (255, 255, 0), 1)
         for d in self.detections:
             x, y, w, h = d.box
             state = target_status(Mob(d.feet, d.score, d.confirmed, d.recovered, d.box), obs, self.c)
@@ -361,7 +429,8 @@ class Vision:
             cv2.circle(output, tuple(map(int, d.feet)), 3, color, -1)
             dy = f" dYf={d.feet[1] - obs.player_feet[1]:+.0f}" if obs.player_feet else ""
             dx = f" dX={d.feet[0] - obs.player_feet[0]:+.0f}" if obs.player_feet else ""
-            cv2.putText(output, f"{state.upper()}{'~' if d.recovered else ''}{dx}{dy} {d.score:.2f}",
+            tag = "COLOR " if d.source == "color" else ""
+            cv2.putText(output, f"{tag}{state.upper()}{'~' if d.recovered else ''}{dx}{dy} {d.score:.2f}",
                         (x, y - 4), 0, .4, color, 1)
         if obs.player_feet:
             x, y = map(int, obs.player_feet)

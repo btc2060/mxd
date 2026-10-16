@@ -4,7 +4,7 @@ from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import numpy as np
 
@@ -14,7 +14,7 @@ from lionbot.config import Config
 
 
 class LivePreviewTests(unittest.TestCase):
-    def exercise_preview(self, pause=False, close_error=False):
+    def exercise_preview(self, pause=False, close_error=False, stationary=False):
         window = Mock()
         focused = [True]
         window.focused.side_effect = lambda: focused[0]
@@ -36,6 +36,9 @@ class LivePreviewTests(unittest.TestCase):
 
         waits = [-1, ord("q")]
         config = replace(Config(), world_pixels_per_x=2000, auto_route=False)
+        if stationary:
+            config = replace(config, behavior="stationary", station=(.3, .759),
+                             minimap_roi=(0, 0, 137, 103))
         with ExitStack() as stack:
             stack.enter_context(patch.dict("sys.modules", {"pynput": ModuleType("pynput"),
                                                           "pynput.keyboard": keyboard_module}))
@@ -43,6 +46,8 @@ class LivePreviewTests(unittest.TestCase):
             stack.enter_context(patch("lionbot.windows.GameWindow", return_value=window))
             keyboard = stack.enter_context(patch("lionbot.windows.Keyboard"))
             stack.enter_context(patch("lionbot.__main__.Vision", return_value=vision))
+            stack.enter_context(patch("lionbot.__main__.cv2.getNumThreads", return_value=4))
+            threads = stack.enter_context(patch("lionbot.__main__.cv2.setNumThreads"))
             stack.enter_context(patch("lionbot.__main__.time.sleep"))
             stack.enter_context(patch("builtins.print"))
             for name in ("namedWindow", "resizeWindow", "destroyAllWindows"):
@@ -60,6 +65,7 @@ class LivePreviewTests(unittest.TestCase):
         listener.stop.assert_called_once()
         vision.reset.assert_called_once()
         keyboard.assert_not_called()
+        self.assertEqual(threads.call_args_list, [call(1), call(4)] if stationary else [])
 
     def test_preview_quits_after_game_loses_focus(self):
         self.exercise_preview()
@@ -69,3 +75,6 @@ class LivePreviewTests(unittest.TestCase):
 
     def test_closed_preview_property_error_is_normal_exit(self):
         self.exercise_preview(close_error=True)
+
+    def test_stationary_preview_keeps_pause_events_and_restores_opencv_threads(self):
+        self.exercise_preview(pause=True, stationary=True)
