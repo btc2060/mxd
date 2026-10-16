@@ -27,8 +27,18 @@
   "random_attack_min_seconds": 6.0,
   "random_attack_max_seconds": 12.0,
   "random_attack_max_shots": 2,
+  "clear_seconds": 0.8,
+  "clear_frames": 3,
+  "combat_localization_grace": 1.2,
   "player_partial_seconds": 0.35,
   "auto_route": true,
   "ladder_x": 0.212,
+  "ladder_align_frames": 3,
+  "ladder_nudge_seconds": 0.02,
+  "ladder_align_timeout": 5.0,
+  "ladder_max_attempts": 3,
+  "grab_confirm_seconds": 0.8,
+  "grab_timeout": 2.2,
+  "grab_min_rise": 0.02,
   "top_drop_x": 0.045
 }

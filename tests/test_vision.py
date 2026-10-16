@@ -244,6 +244,21 @@ class VisionTests(unittest.TestCase):
             self.assertEqual(tuple(output[236, 312]), (255, 0, 255))  # 脚底 300 到头顶 236。
             self.assertNotEqual(tuple(output[322, 250]), (255, 0, 255))  # 脚底下不再画对称攻击带。
 
+    def test_overlay_marks_both_sides_as_targets_in_either_patrol_direction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            frame, config = fixture(Path(directory))
+            frame[260:304, 170:212] = sprite()
+            vision = Vision(config, Path(directory))
+            vision.observe(frame, now=0)
+            obs = vision.observe(frame, now=.1)
+            self.assertEqual(len(obs.mobs), 2)
+            for direction in ("left", "right"):
+                output = vision.draw(frame, obs, "both sides", direction)
+                for mob in obs.mobs:
+                    self.assertEqual(target_status(mob, obs, config, direction), "ready")
+                self.assertEqual(tuple(output[260, 170]), (0, 255, 0))
+                self.assertEqual(tuple(output[260, 414]), (0, 255, 0))
+
     def test_offline_cli_produces_detection_artifact_without_windows(self):
         from dataclasses import asdict
 

@@ -12,7 +12,7 @@ class InputCancelled(Exception):
 
 
 class InputExecutor:
-    """连续步行保持方向；其他动作松键执行，后台守卫处理失焦和超时。"""
+    """步行/爬绳保持方向；微调等短动作结束松键，守卫处理失焦与超时。"""
 
     def __init__(self, keyboard, config: Config, active=lambda: True,
                  clock=time.monotonic, sleep=time.sleep):
@@ -77,7 +77,8 @@ class InputExecutor:
             self.sleep(max(0.0, min(0.01, end - self.clock())))
 
     def execute(self, action: Action) -> float:
-        if action.kind != "walk" or self.held != {action.direction}:
+        motion_key = "up" if action.kind == "climb" else action.direction
+        if action.kind not in ("walk", "climb") or self.held != {motion_key}:
             self.stop()
         keep_walking = False
         pressed_at = self.clock()
@@ -92,6 +93,9 @@ class InputExecutor:
             elif action.kind in ("walk", "face"):
                 pressed_at = self.press(action.direction)
                 self.delay(0.025 if action.kind == "face" else 0.06)
+            elif action.kind == "nudge":
+                pressed_at = self.press(action.direction)
+                self.delay(self.c.ladder_nudge_seconds)
             elif action.kind in ("teleport", "top_teleport"):
                 self.press(action.direction)
                 self.delay(0.04)
@@ -113,7 +117,7 @@ class InputExecutor:
                 self.delay(0.08)
             elif action.kind not in ("wait", "scan"):
                 raise ValueError(f"未知动作：{action.kind}")
-            if action.kind == "walk":
+            if action.kind in ("walk", "climb"):
                 self.check()
                 with self.lock:
                     self.hold_deadline = self.clock() + .25

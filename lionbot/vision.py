@@ -16,7 +16,6 @@ from .screen_map import ScreenMapper
 
 TARGET_COLORS = {"ready": (0, 255, 0), "height": (160, 160, 160),
                  "range": (255, 160, 0), "pending": (0, 180, 255),
-                 "behind": (100, 100, 190),
                  "unlocalized": (130, 130, 130), "uncalibrated": (180, 80, 180)}
 
 
@@ -342,7 +341,7 @@ class Vision:
         output = frame.copy()
         for d in self.detections:
             x, y, w, h = d.box
-            state = target_status(Mob(d.feet, d.score, d.confirmed, d.recovered, d.box), obs, self.c, direction)
+            state = target_status(Mob(d.feet, d.score, d.confirmed, d.recovered, d.box), obs, self.c)
             color = TARGET_COLORS[state]
             cv2.rectangle(output, (x, y), (x + w, y + h), color, 1)
             body_top, body_bottom = monster_vertical_bounds(d.feet, d.box)
@@ -368,7 +367,7 @@ class Vision:
             cv2.putText(output, f"BODY BAND: Y={top}..{bottom} H={self.c.player_height_px:.0f}px MOVE:{direction.upper()}",
                         (12, output.shape[0] - 60), 0, .4, (255, 0, 255), 1)
         cv2.putText(output, status, (12, output.shape[0] - 15), 0, .5, (0, 255, 255), 1)
-        cv2.putText(output, "GREEN: ahead in range | GRAY: height | BLUE: far | RED: behind",
+        cv2.putText(output, "GREEN: nearby in range | GRAY: height | BLUE: far | ORANGE: pending",
                     (12, output.shape[0] - 38), 0, .45, (230, 230, 230), 1)
         return output
 

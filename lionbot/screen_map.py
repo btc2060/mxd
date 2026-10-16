@@ -135,7 +135,7 @@ def calibrate_anchor(path: Path) -> None:
     config.require_calibration()
     window = GameWindow(config.window_title)
     try:
-        print("只点一次角色脚底，不框选名牌或怪物；用于确定前方和攻击高度，导航使用黄点。")
+        print("只点一次角色脚底，不框选名牌或怪物；用于确定左右和攻击高度，导航使用黄点。")
         frame = fresh(window, "请让角色在底层或顶层地面站稳，截图时松开按键。")
         position = get_position(frame, config)
         if not any(abs(position[1] - floor.y) <= config.floor_tolerance for floor in (config.bottom, config.top)):

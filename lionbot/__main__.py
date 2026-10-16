@@ -64,14 +64,16 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
         listener.start()
         print("运行模式：" + ("发送按键" if run else "仅观察，不发送按键"))
         print("F8 暂停/恢复，F12 退出。请将游戏置于前台；失焦立即停止输入。")
-        print(f"黄点导航，只打行进方向前方；底层 {config.patrol_round_trips} 个完整往返后沿途清怪去梯子。")
-        print(f"识别后每组 {config.attack_burst_shots} 次攻击；步行途中随机插入 1～{config.random_attack_max_shots} 次。")
+        print(f"黄点导航，停步清理身前身后；底层 {config.patrol_round_trips} 个完整往返后沿途清怪去梯子。")
+        print(f"每组最多 {config.attack_burst_shots} 次，周围仍有目标就继续；"
+              f"连续 {config.clear_frames} 帧且至少 {config.clear_seconds:.1f}s 无候选后恢复原路线。")
+        print(f"爬绳入口：清怪→短按微调→连续对齐→抓绳→持续 Y 上升确认；最多尝试 {config.ladder_max_attempts} 次。")
         if vision.mapper.notice:
             print(vision.mapper.notice)
         print(f"攻击距离 X={config.attack_range:.4f}，约 {config.attack_range * config.world_pixels_per_x:.0f}px；"
               f"间隔 {config.attack_interval:.1f}s。步行为主，巡逻瞬移至少间隔 {max(12, config.teleport_cooldown):.0f}s。")
         print(f"攻击高度：角色脚底向上 {config.player_height_px:.0f}px 到头顶；"
-              "怪物头像到标定脚底的身体范围相交即可，BEHIND 表示身后。")
+              "怪物头像到标定脚底的身体范围相交即可，两侧目标均参与清理。")
         if run:
             print("有效定位后先按一次 Alt，之后每 190 秒按一次；暂停/失焦后恢复不重复首按。")
         previous_status = ""
@@ -94,14 +96,17 @@ def live(config, root: Path, mode: str, run: bool, show: bool) -> None:
             obs = vision.observe(frame, focused=window.focused())
             action = brain.decide(obs, time.monotonic())
             if obs.location_source == "unmapped" and previous_source != "unmapped":
-                print("主画面前方/高度暂未定位；黄点导航与随机攻击继续。可运行 --calibrate-anchor，点一次脚底建立参考。")
+                print("主画面位置暂未定位，黄点仍有效；爬绳前需等待有效画面确认清怪。"
+                      "可运行 --calibrate-anchor，点一次脚底建立参考。")
             previous_source = obs.location_source
             position = f"({obs.position[0]:.4f},{obs.position[1]:.4f})" if obs.position else "lost"
-            ready = sum(target_status(m, obs, config, brain.direction) == "ready" for m in obs.mobs)
-            height = sum(target_status(m, obs, config, brain.direction) == "height" for m in obs.mobs)
+            ready = sum(target_status(m, obs, config) == "ready" for m in obs.mobs)
+            height = sum(target_status(m, obs, config) == "height" for m in obs.mobs)
             status = (f"pos={position} floor={brain.floor} mobs={sum(m.confirmed for m in obs.mobs)}/{len(obs.mobs)} "
                       f"ready={ready} height={height} recovered={sum(m.recovered for m in obs.mobs)} "
                       f"screen={obs.location_source} laps={brain.completed_round_trips}/{config.patrol_round_trips} "
+                      f"move={brain.direction} face={brain.facing or '?'} clear={int(brain.clearing)} "
+                      f"route={brain.route or '-'} grabs={brain.grab_attempts} "
                       f"{action.kind}:{action.direction}")
             if action.reason != previous_status or loop_start - last_log >= 2:
                 print(f"{status} | {action.reason}")

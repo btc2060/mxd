@@ -95,7 +95,7 @@ class ScreenMappingTests(unittest.TestCase):
             self.assertAlmostEqual(obs.player_feet[1], 300, delta=1)
             self.assertEqual(len(obs.mobs), 1)
             self.assertEqual(target_status(obs.mobs[0], obs, config, "right"), "ready")
-            self.assertEqual(target_status(obs.mobs[0], obs, config, "left"), "behind")
+            self.assertEqual(target_status(obs.mobs[0], obs, config, "left"), "ready")
             self.assertTrue((root / config.screen_anchor).exists())
 
     def test_existing_nameplate_can_seed_terrain_tracking_before_it_disappears(self):

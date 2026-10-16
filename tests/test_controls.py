@@ -116,6 +116,29 @@ class ControlTests(unittest.TestCase):
         self.executor.execute(Action("climb_exit"))
         self.assertEqual([e[1] for e in self.keyboard.events if e[0] == "press"], ["space"])
 
+    def test_nudge_is_short_direction_pulse_without_f_or_jump_and_releases(self):
+        self.executor.execute(Action("nudge", "left"))
+        self.assertEqual([e[:2] for e in self.keyboard.events], [("press", "left"), ("release", "left")])
+        self.assertAlmostEqual(self.clock.now, self.executor.c.ladder_nudge_seconds)
+        self.assertLess(self.clock.now, .06)
+        self.assertEqual(self.keyboard.held, set())
+
+    def test_climb_holds_up_between_frames_then_releases_before_exit_jump(self):
+        for _ in range(3):
+            self.executor.execute(Action("climb", "up"))
+        self.assertEqual(self.keyboard.held, {"up"})
+        self.assertEqual([e[:2] for e in self.keyboard.events], [("press", "up")])
+        self.executor.execute(Action("climb_exit"))
+        space = next(e for e in self.keyboard.events if e[:2] == ("press", "space"))
+        self.assertEqual(space[2], set())
+        self.assertEqual(self.keyboard.held, set())
+
+    def test_climb_focus_loss_releases_up(self):
+        self.executor.execute(Action("climb", "up"))
+        self.executor.active = lambda: False
+        self.executor.guard_once()
+        self.assertEqual(self.keyboard.held, set())
+
     def test_drop_does_not_press_space(self):
         self.executor.execute(Action("drop_walk", "left"))
         self.assertEqual([e[1] for e in self.keyboard.events if e[0] == "press"], ["left"])

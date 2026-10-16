@@ -60,6 +60,9 @@ class Config:
     random_attack_min_seconds: float = 6.0
     random_attack_max_seconds: float = 12.0
     random_attack_max_shots: int = 2
+    clear_seconds: float = 0.8
+    clear_frames: int = 3
+    combat_localization_grace: float = 1.2
     player_partial_seconds: float = 0.35
     player_threshold: float = 0.82
     monster_threshold: float = 0.82
@@ -68,6 +71,13 @@ class Config:
     auto_route: bool = True
     ladder_x: float = 0.212
     ladder_tolerance: float = 0.008
+    ladder_align_frames: int = 3
+    ladder_nudge_seconds: float = 0.02
+    ladder_align_timeout: float = 5.0
+    ladder_max_attempts: int = 3
+    grab_confirm_seconds: float = 0.8
+    grab_timeout: float = 2.2
+    grab_min_rise: float = 0.02
     climb_timeout: float = 18.0
     climb_stuck_seconds: float = 1.5
     top_drop_x: float | None = 0.045
@@ -110,6 +120,16 @@ class Config:
             raise ValueError("随机攻击时间范围必须为正数且按先小后大设置")
         if not 1 <= self.random_attack_max_shots <= 3:
             raise ValueError("一组随机攻击必须为 1～3 次")
+        if not 0 < self.clear_seconds <= 5 or self.clear_frames < 2:
+            raise ValueError("清怪确认必须至少两帧，持续时间在 (0, 5] 秒内")
+        if not 0 < self.combat_localization_grace <= 3:
+            raise ValueError("战斗定位丢失的等待时间必须在 (0, 3] 秒内")
+        if self.ladder_align_frames < 2 or not .005 <= self.ladder_nudge_seconds <= .05:
+            raise ValueError("爬绳对齐至少确认两帧，微调按键为 0.005～0.05 秒")
+        if not 1 <= self.ladder_max_attempts <= 5 or self.ladder_align_timeout <= 0:
+            raise ValueError("抓绳尝试次数必须为 1～5，对齐超时必须为正数")
+        if not 0 < self.grab_confirm_seconds < self.grab_timeout or not 0 < self.grab_min_rise < 1:
+            raise ValueError("抓绳确认时间必须小于超时，确认上升量必须在 (0, 1) 内")
         if not 0 < self.target_reacquire_seconds < self.target_memory_seconds <= 2:
             raise ValueError("目标重查时间必须小于记忆时间，记忆最长 2 秒")
         if not 0 < self.player_partial_seconds <= 0.5:
