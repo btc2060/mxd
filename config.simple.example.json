@@ -12,5 +12,12 @@
   "attack_hold": 0.08,
   "face_hold": 0.08,
   "d_shots_before_a": 6,
-  "a_attack_shots": 4
+  "a_attack_shots": 4,
+  "move_attack_min": 15,
+  "move_attack_max": 25,
+  "move_left_taps_min": 5,
+  "move_left_taps_max": 15,
+  "move_attack_shots": 3,
+  "move_tap_hold": 0.04,
+  "move_tap_gap": 0.06
 }

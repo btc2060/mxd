@@ -100,7 +100,10 @@ class InputExecutor:
                 self.delay(self.c.face_hold if action.kind == "face" else 0.06)
             elif action.kind == "nudge":
                 pressed_at = self.press(action.direction)
-                self.delay(self.c.ladder_nudge_seconds)
+                try:
+                    self.delay(self.c.ladder_nudge_seconds)
+                except InputCancelled:
+                    return pressed_at
             elif action.kind in ("teleport", "top_teleport"):
                 self.press(action.direction)
                 self.delay(0.04)

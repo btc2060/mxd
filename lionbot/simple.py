@@ -68,7 +68,7 @@ def run_simple(config, path, send_keys):
     try:
         if send_keys:
             input_config = Config(attack_interval=config.attack_interval, attack_hold=config.attack_hold,
-                                  face_hold=config.face_hold)
+                                  face_hold=config.face_hold, ladder_nudge_seconds=config.move_tap_hold)
             executor = InputExecutor(Keyboard(), input_config,
                                      active=lambda: window.focused() and not paused.is_set() and not stopped.is_set())
             guard = executor.start_guard(stopped)
@@ -92,6 +92,9 @@ def run_simple(config, path, send_keys):
         print(f"累计按下 D {config.d_shots_before_a} 次后，切换为 A {config.a_attack_shots} 次，再恢复 D；"
               "回位前补打的 D 也计入，暂停和回位保留换键进度。")
         print(f"X 偏离后向右 D {config.recovery_shots} 次，再步行回位；启动 Alt 一次，此后每 {config.alt_interval:g}s 一次。")
+        print(f"累计 D/A 随机 {config.move_attack_min}～{config.move_attack_max} 次后，短按左方向键随机 "
+              f"{config.move_left_taps_min}～{config.move_left_taps_max} 次，朝左 D {config.move_attack_shots} 次，"
+              "回挂机点后继续原 D/A 循环。")
         print("只截图小地图，不加载怪物/名牌/地形识别。F8 暂停/恢复；F9 将当前 X 设为新挂机点；F12 退出。")
         last_status, logged_at = "", float("-inf")
         while not stopped.is_set():
@@ -121,7 +124,7 @@ def run_simple(config, path, send_keys):
                     save_simple(path, updated)
                     config = updated
                     brain.set_station(config.station_x)
-                    print(f"新挂机 X={config.station_x:.4f} 已保存；普通组数重置，保留 D/A 换键进度。")
+                    print(f"新挂机 X={config.station_x:.4f} 已保存；取消旧移动并重新计数，保留 D/A 换键进度。")
             if paused.is_set():
                 brain.suspend()
                 time.sleep(.1)
@@ -129,7 +132,8 @@ def run_simple(config, path, send_keys):
             action = brain.decide(position[0] if position else None, time.monotonic(), window.focused())
             current = f"X={position[0]:.4f}" if position else "黄点丢失"
             status = (f"{current} 目标={config.station_x:.4f} D组={brain.d_groups} "
-                      f"D累计={brain.d_since_a}/{config.d_shots_before_a} A={brain.a_shots}/{config.a_attack_shots} {action.reason}")
+                      f"D累计={brain.d_since_a}/{config.d_shots_before_a} A={brain.a_shots}/{config.a_attack_shots} "
+                      f"移动累计={brain.attacks_since_move}/{brain.next_move_at} 阶段={brain.move_phase or '-'} {action.reason}")
             if status != last_status or started - logged_at >= 2:
                 print(status)
                 last_status, logged_at = status, started
@@ -151,7 +155,7 @@ def run_simple(config, path, send_keys):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="朝右 D/A 定点攻击，按 D 次数换键，用小地图 X 回位")
+    parser = argparse.ArgumentParser(description="朝右 D/A 定点攻击，定期左移补打，用小地图 X 回位")
     parser.add_argument("--config", type=Path, default=Path("config.simple.local.json"))
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--setup", action="store_true", help="记录新的挂机 X；有旧框时复用小地图，无需怪物采样")

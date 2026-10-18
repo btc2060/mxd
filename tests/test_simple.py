@@ -1,6 +1,7 @@
 """不连接游戏，验证最简循环的实际按键、时序、X 回位与独立设置。"""
 import io
 import json
+import random
 import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stdout
@@ -27,13 +28,15 @@ def config(**changes):
 
 
 class Simulation:
-    def __init__(self, c=None):
-        self.c = c or config()
+    def __init__(self, c=None, rng=None):
+        # 老的换键测试隔离定期移动；移动测试显式使用生产默认配置。
+        self.c = c or config(move_attack_min=100000, move_attack_max=100000)
         self.clock = Clock()
         self.keyboard = Keyboard(self.clock)
-        self.brain = SimpleCycle(self.c)
+        self.brain = SimpleCycle(self.c, rng=rng if rng is not None else random.Random(23))
         self.executor = InputExecutor(self.keyboard, Config(attack_hold=self.c.attack_hold,
-                                                           face_hold=self.c.face_hold),
+                                                           face_hold=self.c.face_hold,
+                                                           ladder_nudge_seconds=self.c.move_tap_hold),
                                       clock=self.clock.time, sleep=self.clock.sleep)
         self.history = []
 
@@ -305,6 +308,152 @@ class SkillInputTests(unittest.TestCase):
             self.executor.execute(Action("attack_a", "right"))
         self.assertFalse(self.keyboard.events)
 
+    def test_pause_after_left_tap_keydown_counts_once_and_releases_it(self):
+        active = [True]
+        self.executor.active = lambda: active[0]
+        original = self.keyboard.press
+
+        def interrupt(key):
+            original(key)
+            active[0] = False
+
+        self.keyboard.press = interrupt
+        brain = SimpleCycle(config())
+        brain.move_phase, brain.move_taps = "left", 5
+        action = brain.decide(.5, self.clock.now)
+        self.assertEqual((action.kind, action.direction), ("nudge", "left"))
+        brain.executed(action, self.executor.execute(action))
+        self.assertEqual(brain.move_taps_done, 1)
+        self.assertFalse(self.keyboard.held)
+
+
+class PeriodicMoveTests(unittest.TestCase):
+    def test_inclusive_random_limits_count_d_and_a_and_each_tap_is_released(self):
+        rng = Mock()
+        rng.randint.side_effect = [15, 5, 25, 15, 20]
+        sim = Simulation(config(), rng=rng)
+        normal_counts, tap_counts = [], []
+        for threshold, taps in ((15, 5), (25, 15)):
+            start = len(sim.history)
+            sim.until(lambda: bool(sim.brain.move_phase))
+            normal = [a for _, a in sim.history[start:] if a.kind in ("attack", "attack_a")]
+            self.assertEqual(len(normal), threshold)
+            self.assertTrue(any(a.kind == "attack_a" for a in normal))
+            normal_counts.append(sim.brain.attacks_since_move)
+            sim.until(lambda: sim.brain.move_phase == "return")
+            tap_counts.append(sim.brain.move_taps_done)
+            self.assertEqual(sim.brain.move_taps_done, taps)
+            left_d = [a for _, a in sim.history[start:] if a.kind == "attack" and a.direction == "left"]
+            self.assertEqual(len(left_d), 3)
+            self.assertEqual(sim.brain.attacks_since_move, threshold)
+            sim.until(lambda: not sim.brain.move_phase)
+            self.assertEqual(sim.brain.attacks_since_move, 0)
+        self.assertEqual(normal_counts, [15, 25])
+        self.assertEqual(tap_counts, [5, 15])
+        self.assertEqual(sim.brain.next_move_at, 20)
+        self.assertEqual(rng.randint.call_count, 5)
+        pulses = [e for e in sim.keyboard.events if e[1] == "left"]
+        self.assertEqual([e[0] for e in pulses], ["press", "release"] * 20)
+        for press, release in zip(pulses[::2], pulses[1::2]):
+            self.assertAlmostEqual(release[3] - press[3], sim.c.move_tap_hold)
+
+    def test_interrupting_partial_a_preserves_original_cycle_and_left_d_is_extra(self):
+        sim = Simulation(config(move_attack_min=19, move_attack_max=19,
+                                move_left_taps_min=5, move_left_taps_max=5))
+        sim.until(lambda: bool(sim.brain.move_phase))
+        progress = (sim.brain.d_since_a, sim.brain.a_shots, sim.brain.shots, sim.brain.d_groups)
+        self.assertEqual(progress[:2], (6, 3))
+        start = len(sim.history)
+        sim.until(lambda: not sim.brain.move_phase)
+        self.assertEqual((sim.brain.d_since_a, sim.brain.a_shots, sim.brain.shots, sim.brain.d_groups), progress)
+        sim.until(lambda: sim.brain.d_since_a == 0)
+        attacks = [(a.kind, a.direction) for _, a in sim.history[start:] if a.kind in ("attack", "attack_a")]
+        self.assertEqual(attacks, [("attack", "left")] * 3 + [("attack_a", "right")])
+
+    def test_pause_and_yellow_loss_keep_the_sampled_tap_target_and_progress(self):
+        sim = Simulation(config(move_attack_min=3, move_attack_max=3,
+                                move_left_taps_min=8, move_left_taps_max=8))
+        sim.until(lambda: sim.brain.move_taps_done == 2)
+        sim.brain.suspend()
+        sim.tick(None)
+        sim.tick(.5, focused=False)
+        self.assertEqual((sim.brain.move_taps, sim.brain.move_taps_done), (8, 2))
+        sim.until(lambda: not sim.brain.move_phase)
+        left_presses = [e for e in sim.keyboard.events if e[:2] == ("press", "left")]
+        self.assertEqual(len(left_presses), 8)
+        self.assertFalse(sim.keyboard.held)
+
+    def test_alt_waits_until_periodic_route_finishes_then_runs_once(self):
+        sim = Simulation(config(move_attack_min=3, move_attack_max=3))
+        sim.until(lambda: bool(sim.brain.move_phase))
+        sim.brain.next_alt = sim.clock.now
+        start = len(sim.history)
+        sim.until(lambda: not sim.brain.move_phase)
+        self.assertFalse(any(a.kind == "alt" for _, a in sim.history[start:]))
+        self.assertEqual(sim.tick().kind, "alt")
+
+    def test_f9_cancels_periodic_route_and_preserves_skill_switch_progress(self):
+        sim = Simulation(config(move_attack_min=3, move_attack_max=3))
+        sim.until(lambda: sim.brain.move_taps_done == 2)
+        progress = (sim.brain.d_since_a, sim.brain.a_shots)
+        sim.brain.set_station(.6)
+        self.assertEqual(sim.brain.move_phase, "")
+        self.assertEqual(sim.brain.attacks_since_move, 0)
+        self.assertEqual(sim.brain.c.station_x, .6)
+        self.assertEqual((sim.brain.d_since_a, sim.brain.a_shots), progress)
+
+    def test_real_inputs_walk_left_attack_left_return_home_and_resume_right(self):
+        c = config(move_attack_min=15, move_attack_max=15,
+                   move_left_taps_min=15, move_left_taps_max=15)
+
+        class World(Clock, Keyboard):
+            def __init__(self):
+                Clock.__init__(self)
+                Keyboard.__init__(self, self)
+                self.x, self.facing = .5, "left"
+
+            def sleep(self, delay):
+                self.x += .06 * delay * (int("right" in self.held) - int("left" in self.held))
+                Clock.sleep(self, delay)
+
+            def press(self, key):
+                Keyboard.press(self, key)
+                if key in ("left", "right"):
+                    self.facing = key
+
+        world = World()
+        brain = SimpleCycle(c)
+        executor = InputExecutor(world, Config(ladder_nudge_seconds=c.move_tap_hold),
+                                 clock=world.time, sleep=world.sleep)
+        history, started, completed = [], False, False
+        try:
+            while world.now < 90:
+                action = brain.decide(round(world.x * 200) / 200, world.now)
+                previous_phase = brain.move_phase
+                brain.executed(action, executor.execute(action))
+                if action.kind in ("attack", "attack_a"):
+                    self.assertEqual(world.facing, action.direction)
+                    self.assertFalse({"left", "right"} & world.held)
+                history.append((action, previous_phase, world.x))
+                started |= bool(brain.move_phase)
+                completed |= started and not brain.move_phase
+                if completed and action.kind in ("attack", "attack_a"):
+                    break
+                world.sleep(.05)
+            else:
+                self.fail(f"定期移动未完成：{brain.move_phase}，X={world.x}")
+        finally:
+            executor.stop()
+        left_taps = [a for a, phase, _ in history if a.kind == "nudge" and phase == "left"]
+        left_d = [a for a, _, _ in history if a.kind == "attack" and a.direction == "left"]
+        self.assertEqual(len(left_taps), 15)
+        self.assertEqual(len(left_d), 3)
+        self.assertTrue(any(a.kind == "walk" and a.direction == "right" for a, _, _ in history))
+        self.assertEqual(history[-1][0].direction, "right")
+        self.assertGreater(.5 - min(x for _, _, x in history), .02)
+        self.assertLessEqual(abs(world.x - .5), brain.outer_tolerance)
+        self.assertFalse(world.held)
+
 
 class SimpleSetupTests(unittest.TestCase):
     def setUp(self):
@@ -365,6 +514,9 @@ class SimpleSetupTests(unittest.TestCase):
     def test_invalid_counts_intervals_and_rois_are_rejected(self):
         for change in ({"right_attack_shots": 0}, {"recovery_shots": True},
                        {"d_shots_before_a": 0}, {"d_shots_before_a": 2.5}, {"a_attack_shots": False},
+                       {"move_attack_min": 26}, {"move_attack_max": 0}, {"move_left_taps_min": 16},
+                       {"move_left_taps_max": False}, {"move_attack_shots": 0},
+                       {"move_tap_hold": .5}, {"move_tap_gap": -1},
                        {"attack_interval": .1}, {"group_pause": -1}, {"group_pause": float("inf")},
                        {"minimap_roi": (0, 0, 801, 100)}, {"station_x": 1.1}):
             with self.subTest(change=change), self.assertRaises(ValueError):
