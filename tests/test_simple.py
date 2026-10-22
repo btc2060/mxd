@@ -572,7 +572,7 @@ class SimpleSetupTests(unittest.TestCase):
             vision = stack.enter_context(patch("lionbot.vision.Vision"))
             stack.enter_context(patch("lionbot.simple.time.sleep", side_effect=stop_after_record))
             stack.enter_context(redirect_stdout(io.StringIO()))
-            run_simple(config(), self.path, send_keys=False)
+            run_simple(config(lie_alert_enabled=False), self.path, send_keys=False)
         self.assertEqual(load_simple(self.path).station_x, .51)
         keyboard.assert_not_called()
         vision.assert_not_called()

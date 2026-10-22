@@ -19,5 +19,10 @@
   "move_left_taps_max": 15,
   "move_attack_shots": 3,
   "move_tap_hold": 0.04,
-  "move_tap_gap": 0.06
+  "move_tap_gap": 0.06,
+  "lie_alert_enabled": true,
+  "lie_alert_template": "calibration/lie-alert-title.png",
+  "lie_alert_interval": 0.25,
+  "lie_alert_threshold": 0.9,
+  "lie_alert_roi": null
 }

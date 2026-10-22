@@ -33,6 +33,11 @@ class SimpleConfig:
     move_attack_shots: int = 3
     move_tap_hold: float = .04
     move_tap_gap: float = .06
+    lie_alert_enabled: bool = True
+    lie_alert_template: str = "calibration/lie-alert-title.png"
+    lie_alert_interval: float = .25
+    lie_alert_threshold: float = .90
+    lie_alert_roi: tuple[int, int, int, int] | None = None
 
     def validate(self, ready=False):
         for name in ("right_attack_shots", "recovery_shots", "d_shots_before_a", "a_attack_shots",
@@ -40,7 +45,8 @@ class SimpleConfig:
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError(f"{name} 必须为正整数")
         for name in ("station_x", "x_tolerance", "attack_interval", "group_pause",
-                     "alt_interval", "attack_hold", "face_hold", "move_tap_hold", "move_tap_gap"):
+                     "alt_interval", "attack_hold", "face_hold", "move_tap_hold", "move_tap_gap",
+                     "lie_alert_interval", "lie_alert_threshold"):
             value = getattr(self, name)
             if value is None and name == "station_x":
                 continue
@@ -58,7 +64,11 @@ class SimpleConfig:
             raise ValueError("定期移动的攻击次数、左键短按次数必须先小后大")
         if not .005 <= self.move_tap_hold <= .05 or not .01 <= self.move_tap_gap <= 1:
             raise ValueError("左键短按持续时间为 0.005～0.05 秒，松开后的间隔为 0.01～1 秒")
-        for name, length in (("minimap_roi", 4), ("frame_size", 2)):
+        if (type(self.lie_alert_enabled) is not bool or not .1 <= self.lie_alert_interval <= 2
+                or not .7 <= self.lie_alert_threshold <= 1
+                or not isinstance(self.lie_alert_template, str) or not self.lie_alert_template.strip()):
+            raise ValueError("测谎开关须为布尔值，检查间隔为 0.1～2 秒，阈值为 0.7～1，标题路径不能为空")
+        for name, length in (("minimap_roi", 4), ("frame_size", 2), ("lie_alert_roi", 4)):
             value = getattr(self, name)
             if value is not None and (len(value) != length or any(type(v) is not int for v in value)):
                 raise ValueError(f"{name} 必须包含 {length} 个整数")
@@ -70,6 +80,11 @@ class SimpleConfig:
                 raise ValueError("minimap_roi 必须是 [x, y, 正宽度, 正高度]")
             if self.frame_size is not None and (x + w > self.frame_size[0] or y + h > self.frame_size[1]):
                 raise ValueError("小地图框超出客户区")
+        if self.lie_alert_roi is not None:
+            x, y, w, h = self.lie_alert_roi
+            if (min(x, y) < 0 or min(w, h) <= 0 or (self.frame_size is not None
+                    and (x + w > self.frame_size[0] or y + h > self.frame_size[1]))):
+                raise ValueError("测谎搜索框必须在游戏客户区内")
         if ready and (self.minimap_roi is None or self.frame_size is None or self.station_x is None):
             raise ValueError("请先运行 python -m lionbot.simple --setup，记录小地图和新的挂机 X")
 
@@ -80,7 +95,7 @@ def load_simple(path: Path) -> SimpleConfig:
     for name in ("left_attack_shots", "groups_per_direction", "alternate_every_rounds", "alternate_shots",
                  "pet_chat_min_seconds", "pet_chat_max_seconds", "pet_commands"):
         raw.pop(name, None)
-    for name in ("minimap_roi", "frame_size"):
+    for name in ("minimap_roi", "frame_size", "lie_alert_roi"):
         if raw.get(name) is not None:
             raw[name] = tuple(raw[name])
     result = SimpleConfig(**raw)

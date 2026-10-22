@@ -57,21 +57,34 @@ def setup(path):
 
 def run_simple(config, path, send_keys):
     from .windows import GameWindow, Keyboard, require_windows
+    from .lie_alert import LieAlertMonitor, load_detector
 
     require_windows()
     from pynput.keyboard import Key, Listener
 
-    stopped, paused, record = threading.Event(), threading.Event(), threading.Event()
+    detector = load_detector(config, path.parent) if config.lie_alert_enabled else None
+    stopped, paused, record, alarm_resume = (threading.Event() for _ in range(4))
     window = GameWindow(config.window_title)
     brain = SimpleCycle(config)
-    executor = guard = listener = None
+    executor = guard = listener = monitor = None
     try:
         if send_keys:
             input_config = Config(attack_interval=config.attack_interval, attack_hold=config.attack_hold,
                                   face_hold=config.face_hold, ladder_nudge_seconds=config.move_tap_hold)
             executor = InputExecutor(Keyboard(), input_config,
-                                     active=lambda: window.focused() and not paused.is_set() and not stopped.is_set())
+                                     active=lambda: window.focused() and not paused.is_set() and not stopped.is_set()
+                                     and (monitor is None or monitor.state.allows_input()))
             guard = executor.start_guard(stopped)
+
+        def on_alarm(reason):
+            paused.set()
+            if executor:
+                executor.stop()
+            print(f"警报：{reason}！已锁定暂停，请手动处理。F8 静音；窗口消失后再按 F8 恢复。", flush=True)
+
+        if detector is not None:
+            monitor = LieAlertMonitor(detector, config.frame_size, lambda: GameWindow(config.window_title),
+                                      on_alarm, config.lie_alert_interval)
 
         def on_press(key):
             if key == Key.f12:
@@ -79,12 +92,17 @@ def run_simple(config, path, send_keys):
 
         def on_release(key):
             if key == Key.f8:
-                paused.clear() if paused.is_set() else paused.set()
+                if monitor is not None and monitor.state.is_latched():
+                    alarm_resume.set()
+                else:
+                    paused.clear() if paused.is_set() else paused.set()
             elif key == Key.f9:
                 record.set()
 
         listener = Listener(on_press=on_press, on_release=on_release)
         listener.start()
+        if monitor:
+            monitor.start()
         print("简单定点：" + ("发送按键" if send_keys else "仅观察，不发送按键、不累计攻击次数"))
         print(f"X={config.station_x:.4f}；只向右攻击，D 每组 {config.right_attack_shots} 次，"
               f"单次间隔 {config.attack_interval:g}s，"
@@ -95,10 +113,42 @@ def run_simple(config, path, send_keys):
         print(f"累计 D/A 随机 {config.move_attack_min}～{config.move_attack_max} 次后，短按左方向键随机 "
               f"{config.move_left_taps_min}～{config.move_left_taps_max} 次，朝左 D {config.move_attack_shots} 次，"
               "回挂机点后继续原 D/A 循环。")
-        print("只截图小地图，不加载怪物/名牌/地形识别。F8 暂停/恢复；F9 将当前 X 设为新挂机点；F12 退出。")
+        print("导航只截图小地图，不加载怪物/名牌/地形识别。F8 暂停/恢复；F9 重设挂机点；F12 退出。")
+        if monitor:
+            print(f"测谎标题独立监控：每 {config.lie_alert_interval:g}s 检查，命中后停键、持续声音报警；"
+                  "窗口消失也不自动恢复，须人工按 F8。请保持游戏前台且无遮挡。")
+        else:
+            print("测谎监控已由配置关闭。")
         last_status, logged_at = "", float("-inf")
         while not stopped.is_set():
             started = time.monotonic()
+            if alarm_resume.is_set():
+                alarm_resume.clear()
+                if monitor and monitor.state.acknowledge(focused=window.focused()):
+                    paused.clear()
+                    brain.suspend()
+                    print("测谎窗口已连续两次未检出，已人工恢复挂机。")
+                elif monitor:
+                    print("报警已静音；仍检测到窗口或尚无连续有效画面，保持暂停。处理完后再按 F8。")
+            if monitor and monitor.state.is_latched():
+                if executor:
+                    executor.stop()
+                record.clear()
+                brain.suspend()
+                if started - logged_at >= 2:
+                    print(f"测谎报警暂停：{monitor.state.reason}；请手动处理，F8 静音/人工恢复。")
+                    logged_at = started
+                time.sleep(.05)
+                continue
+            if monitor and window.focused() and not monitor.state.allows_input():
+                if executor:
+                    executor.stop()
+                brain.suspend()
+                if started - logged_at >= 2:
+                    print("等待有效的测谎监控画面，暂不发送按键。")
+                    logged_at = started
+                time.sleep(.05)
+                continue
             if not window.focused() or (paused.is_set() and not record.is_set()):
                 if executor:
                     executor.stop()
@@ -147,6 +197,8 @@ def run_simple(config, path, send_keys):
         stopped.set()
         if executor:
             executor.stop()
+        if monitor:
+            monitor.stop()
         if guard:
             guard.join(timeout=.5)
         if listener:
@@ -162,10 +214,35 @@ def main(argv=None):
     group.add_argument("--set-x", type=float, help="保存指定的小地图归一化 X，然后退出")
     group.add_argument("--run", action="store_true", help="发送按键")
     group.add_argument("--observe", action="store_true", help="只读取 X，不发送按键（默认）")
+    group.add_argument("--calibrate-alert", action="store_true", help="只采集测谎固定标题，保留挂机站位和参数")
+    group.add_argument("--check-alert", action="store_true", help="配合 --image 离线检查测谎标题，不发送按键")
+    group.add_argument("--test-alert-sound", action="store_true", help="测试声音报警，不截图、不发送按键")
+    parser.add_argument("--image", type=Path, help="配合 --calibrate-alert 或 --check-alert 使用原始截图")
     args = parser.parse_args(argv)
+    if args.image is not None and not (args.calibrate_alert or args.check_alert):
+        parser.error("--image 只能配合 --calibrate-alert 或 --check-alert")
+    if args.check_alert and args.image is None:
+        parser.error("--check-alert 需要 --image <截图路径>")
     path = args.config.resolve()
     try:
-        if args.setup:
+        if args.calibrate_alert:
+            from .lie_alert import calibrate_alert
+
+            calibrate_alert(path, args.image)
+        elif args.test_alert_sound:
+            from .lie_alert import sound_alert
+
+            print("播放三次双音警报，请确认扬声器音量。")
+            for _ in range(3):
+                sound_alert()
+                time.sleep(.3)
+        elif args.check_alert:
+            from .lie_alert import load_detector
+            from .vision import read_image
+
+            found = load_detector(load_simple(path), path.parent).find(read_image(args.image))
+            print(f"检出测谎标题：分数={found[0]:.3f}，位置={found[1]}" if found else "未检出测谎标题，请核对原始尺寸和采样")
+        elif args.setup:
             setup(path)
         else:
             config = load_simple(path)
