@@ -338,7 +338,8 @@ def watch_alert(config, path):
         raise ValueError("缺少游戏尺寸，请先 --setup；已有挂机配置无需重做")
     detector = load_detector(config, path.parent)
     stopped, acknowledge = threading.Event(), threading.Event()
-    monitor = LieAlertMonitor(detector, config.frame_size, lambda: GameWindow(config.window_title),
+    monitor = LieAlertMonitor(detector, config.frame_size,
+                              lambda: GameWindow(config.window_title, frame_size=config.frame_size),
                               lambda reason: print(f"警报：{reason}！请手动处理，F8 静音。", flush=True),
                               config.lie_alert_interval, diagnostic_dir=path.parent / "debug-output" / "lie-alert")
 

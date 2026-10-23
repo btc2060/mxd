@@ -64,7 +64,7 @@ def run_simple(config, path, send_keys):
 
     detector = load_detector(config, path.parent) if config.lie_alert_enabled else None
     stopped, paused, record, alarm_resume = (threading.Event() for _ in range(4))
-    window = GameWindow(config.window_title)
+    window = GameWindow(config.window_title, frame_size=config.frame_size)
     brain = SimpleCycle(config)
     executor = guard = listener = monitor = None
     try:
@@ -83,7 +83,8 @@ def run_simple(config, path, send_keys):
             print(f"警报：{reason}！已锁定暂停，请手动处理。F8 静音；窗口消失后再按 F8 恢复。", flush=True)
 
         if detector is not None:
-            monitor = LieAlertMonitor(detector, config.frame_size, lambda: GameWindow(config.window_title),
+            monitor = LieAlertMonitor(detector, config.frame_size,
+                                      lambda: GameWindow(config.window_title, hwnd=window.hwnd),
                                       on_alarm, config.lie_alert_interval,
                                       diagnostic_dir=path.parent / "debug-output" / "lie-alert")
 

@@ -9,7 +9,7 @@ from contextlib import ExitStack, redirect_stdout
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import cv2
 import numpy as np
@@ -438,6 +438,7 @@ class LiveAlertTests(unittest.TestCase):
 
     def test_alarm_blocks_keyboard_until_title_gone_and_user_presses_f8(self):
         window = Mock()
+        window.hwnd = 123
         window.focused.return_value = True
         image = np.zeros((100, 200, 3), np.uint8)
         cv2.rectangle(image, (98, 48), (102, 52), (0, 255, 255), -1)
@@ -450,8 +451,10 @@ class LiveAlertTests(unittest.TestCase):
         class Monitor:
             def __init__(self, _detector, _size, _factory, on_alarm, _interval, diagnostic_dir=None):
                 self.state, self.callback = AlertState(max_age=10), on_alarm
+                self.factory = _factory
                 instances.append(self)
             def start(self):
+                self.factory()
                 self.state.publish(hit=True)
                 self.callback("检测到测谎窗口")
             def stop(self):
@@ -478,7 +481,7 @@ class LiveAlertTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             stack.enter_context(patch.dict("sys.modules", {"pynput": ModuleType("pynput"), "pynput.keyboard": module}))
             stack.enter_context(patch("lionbot.windows.require_windows"))
-            stack.enter_context(patch("lionbot.windows.GameWindow", return_value=window))
+            windows = stack.enter_context(patch("lionbot.windows.GameWindow", return_value=window))
             stack.enter_context(patch("lionbot.windows.Keyboard", return_value=keyboard))
             stack.enter_context(patch("lionbot.lie_alert.load_detector", return_value=Mock()))
             stack.enter_context(patch("lionbot.lie_alert.LieAlertMonitor", Monitor))
@@ -488,3 +491,5 @@ class LiveAlertTests(unittest.TestCase):
         self.assertEqual([e[1] for e in keyboard.events if e[0] == "press"], ["alt"])
         window.capture_region.assert_called_once()
         self.assertFalse(keyboard.held)
+        self.assertEqual(windows.call_args_list, [call(config().window_title, frame_size=(800, 600)),
+                                                   call(config().window_title, hwnd=123)])
