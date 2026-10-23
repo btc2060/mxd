@@ -18,7 +18,7 @@ from lionbot.brain import Action
 from lionbot.config import Config
 from lionbot.controls import InputCancelled, InputExecutor
 from lionbot.lie_alert import (AlertState, LieAlertMonitor, TitleDetector,
-                              calibrate_alert, load_detector, sound_alert)
+                              calibrate_alert, load_detector, sound_alert, watch_alert)
 from lionbot.simple import main, run_simple
 from lionbot.simple_cycle import load_simple
 from lionbot.vision import write_image, read_image
@@ -51,6 +51,48 @@ def wait_until(predicate, timeout=1):
 
 
 class TitleDetectionTests(unittest.TestCase):
+    def test_resized_titles_include_windows_dpi_sizes_and_non_integer_scale(self):
+        detector = TitleDetector(title())
+        for scale in (.75, .8, 1.25, 1.333, 1.5, 1.75, 2.):
+            with self.subTest(scale=scale):
+                actual = cv2.resize(title(), None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+                frame = np.full((600, 800, 3), (170, 80, 20), np.uint8)
+                h, w = actual.shape[:2]
+                frame[221:221 + h, 333:333 + w] = actual
+                hit = detector.find(frame)
+                self.assertIsNotNone(hit, detector.last_report.describe())
+                self.assertLessEqual(abs(hit[1][0] - 333), 2)
+                self.assertLessEqual(abs(hit[1][1] - 221), 2)
+                self.assertAlmostEqual(detector.last_report.scale, scale, delta=.03)
+
+    def test_short_title_survives_tint_compression_and_antialiasing_changes(self):
+        sample = cv2.resize(title(), (128, 23), interpolation=cv2.INTER_AREA)
+        detector = TitleDetector(sample)
+        tinted = cv2.add(sample, np.full_like(sample, (50, 5, 0)))
+        encoded = cv2.imencode(".jpg", sample, [cv2.IMWRITE_JPEG_QUALITY, 55])[1]
+        for actual in (tinted, cv2.GaussianBlur(sample, (3, 3), .8),
+                       cv2.imdecode(encoded, cv2.IMREAD_COLOR)):
+            frame = np.full((300, 500, 3), (170, 80, 20), np.uint8)
+            frame[101:124, 137:265] = actual
+            self.assertIsNotNone(detector.find(frame), detector.last_report.describe())
+
+    def test_miss_reports_scores_and_does_not_reuse_previous_hit(self):
+        detector = TitleDetector(title())
+        self.assertIsNotNone(detector.find(scene()))
+        self.assertIsNone(detector.find(scene(header=title("INVENTORY"))))
+        self.assertFalse(detector.last_report.found)
+        self.assertIn("未检出", detector.last_report.describe())
+        self.assertGreater(detector.last_report.score, 0)
+        self.assertLess(detector.last_report.score, detector.threshold)
+
+    def test_random_game_and_occluded_title_are_not_alerts(self):
+        detector = TitleDetector(title())
+        occluded = title()
+        occluded[:, :60] = 240
+        rng = np.random.default_rng(123)
+        for frame in (scene(header=occluded), rng.integers(0, 256, (600, 800, 3), dtype=np.uint8)):
+            self.assertIsNone(detector.find(frame), detector.last_report.describe())
+
     def test_fixed_title_survives_dialog_moving_countdown_and_animated_content(self):
         detector = TitleDetector(title())
         for at, phase in (((250, 100), 0), ((350, 150), 1), ((10, 50), 2)):
@@ -125,6 +167,70 @@ class AlarmStateTests(unittest.TestCase):
 
 
 class MonitorTests(unittest.TestCase):
+    def test_f10_saves_actual_capture_and_scores_without_triggering_alarm(self):
+        window, alarm = Mock(), Mock()
+        window.focused.return_value = True
+        frame = scene(header=title("INVENTORY"))
+        window.capture.return_value = frame
+        with tempfile.TemporaryDirectory() as directory:
+            monitor = LieAlertMonitor(TitleDetector(title()), (800, 600), lambda: window, alarm,
+                                      interval=.02, sound=lambda: None, diagnostic_dir=Path(directory))
+            monitor.request_snapshot()
+            with redirect_stdout(io.StringIO()):
+                monitor.start()
+                try:
+                    wait_until(lambda: bool(list(Path(directory).glob("*.json"))))
+                    monitor.stop()
+                    self.assertTrue(monitor.state.allows_input())
+                finally:
+                    monitor.stop()
+            alarm.assert_not_called()
+            metadata = json.loads(next(Path(directory).glob("*.json")).read_text(encoding="utf-8"))
+            self.assertFalse(metadata["found"])
+            self.assertEqual(metadata["reason"], "F10")
+            self.assertIn("分数=", monitor.status())
+            np.testing.assert_array_equal(read_image(next(Path(directory).glob("*-screen.png"))), frame)
+
+    def test_failed_diagnostic_write_does_not_disable_monitor_or_latch_false_alarm(self):
+        window, alarm = Mock(), Mock()
+        window.focused.return_value = True
+        window.capture.return_value = scene(header=title("INVENTORY"))
+        monitor = LieAlertMonitor(TitleDetector(title()), (800, 600), lambda: window, alarm,
+                                  interval=.02, sound=lambda: None, diagnostic_dir=Path("unused"))
+        monitor.request_snapshot()
+        with patch("lionbot.lie_alert.save_diagnostic", side_effect=OSError("disk full")), \
+                redirect_stdout(io.StringIO()) as log:
+            monitor.start()
+            try:
+                wait_until(lambda: "保存失败" in log.getvalue())
+            finally:
+                monitor.stop()
+        self.assertFalse(monitor.state.is_latched())
+        alarm.assert_not_called()
+
+    def test_scaled_dialog_latches_and_rings_and_preserves_evidence(self):
+        frame = np.full((600, 800, 3), (170, 80, 20), np.uint8)
+        resized = cv2.resize(title(), (200, 35), interpolation=cv2.INTER_LINEAR)
+        frame[101:136, 251:451] = resized
+        window, alarm, sound = Mock(), threading.Event(), threading.Event()
+        window.focused.return_value = True
+        window.capture.return_value = frame
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
+            monitor = LieAlertMonitor(TitleDetector(title()), (800, 600), lambda: window, lambda _: alarm.set(),
+                                      interval=.02, sound=sound.set, diagnostic_dir=Path(directory))
+            monitor.start()
+            try:
+                self.assertTrue(alarm.wait(1))
+                self.assertTrue(sound.wait(1))
+                wait_until(lambda: bool(list(Path(directory).glob("*.json"))))
+            finally:
+                monitor.stop()
+            self.assertFalse(monitor.state.allows_input())
+            metadata = json.loads(next(Path(directory).glob("*.json")).read_text(encoding="utf-8"))
+            self.assertTrue(metadata["found"])
+            self.assertEqual(metadata["reason"], "alarm")
+            self.assertEqual(len(list(Path(directory).glob("*-screen.png"))), 1)
+
     def test_focus_change_during_capture_never_matches_another_app_or_authorizes_keys(self):
         window, detector = Mock(), Mock()
         calls = []
@@ -256,6 +362,44 @@ class AlertCommandsTests(unittest.TestCase):
         self.assertIn("检出测谎标题", log.getvalue())
         live.assert_not_called()
 
+    def test_offline_miss_shows_scores_and_saves_best_candidate_not_just_a_boolean(self):
+        self.calibrate()
+        write_image(self.image, scene(header=title("INVENTORY")))
+        with redirect_stdout(io.StringIO()) as log:
+            result = main(["--config", str(self.path), "--check-alert", "--image", str(self.image)])
+        self.assertEqual(result, 1)
+        self.assertIn("未检出测谎标题：分数=", log.getvalue())
+        self.assertIn("文字边缘=", log.getvalue())
+        directory = self.root / "debug-output" / "lie-alert"
+        metadata = json.loads(next(directory.glob("*.json")).read_text(encoding="utf-8"))
+        self.assertFalse(metadata["found"])
+        self.assertEqual(metadata["reason"], "offline")
+        np.testing.assert_array_equal(read_image(next(directory.glob("*-template.png"))), title())
+
+    def test_watch_command_runs_without_ready_station_or_game_inputs(self):
+        self.path.write_text(json.dumps({"frame_size": [800, 600]}), encoding="utf-8")
+        with patch("lionbot.lie_alert.watch_alert") as watch, patch("lionbot.simple.run_simple") as live:
+            self.assertEqual(main(["--config", str(self.path), "--watch-alert"]), 0)
+        watch.assert_called_once()
+        live.assert_not_called()
+
+    def test_live_watch_never_constructs_keyboard_controller(self):
+        self.calibrate()
+        module = ModuleType("pynput.keyboard")
+        module.Key = SimpleNamespace(f8="f8", f10="f10", f12="f12")
+        def listener_factory(**callbacks):
+            listener = Mock()
+            listener.start.side_effect = lambda: callbacks["on_release"](module.Key.f12)
+            return listener
+        module.Listener = Mock(side_effect=listener_factory)
+        with patch.dict("sys.modules", {"pynput": ModuleType("pynput"), "pynput.keyboard": module}), \
+                patch("lionbot.windows.require_windows"), patch("lionbot.windows.Keyboard") as keyboard, \
+                patch("lionbot.lie_alert.LieAlertMonitor") as monitor, redirect_stdout(io.StringIO()):
+            watch_alert(load_simple(self.path), self.path)
+        keyboard.assert_not_called()
+        monitor.return_value.start.assert_called_once()
+        monitor.return_value.stop.assert_called_once()
+
     def test_sound_test_does_not_open_game(self):
         with patch("lionbot.lie_alert.sound_alert") as sound, patch("lionbot.simple.time.sleep"), \
                 patch("lionbot.windows.GameWindow") as window, redirect_stdout(io.StringIO()):
@@ -304,7 +448,7 @@ class LiveAlertTests(unittest.TestCase):
         module.Key, module.Listener = keys, Mock(return_value=Mock())
         instances = []
         class Monitor:
-            def __init__(self, _detector, _size, _factory, on_alarm, _interval):
+            def __init__(self, _detector, _size, _factory, on_alarm, _interval, diagnostic_dir=None):
                 self.state, self.callback = AlertState(max_age=10), on_alarm
                 instances.append(self)
             def start(self):
@@ -312,6 +456,8 @@ class LiveAlertTests(unittest.TestCase):
                 self.callback("检测到测谎窗口")
             def stop(self):
                 pass
+            def status(self):
+                return "测谎监控测试"
         ticks = []
         def drive(_delay):
             ticks.append(1)

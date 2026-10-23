@@ -84,7 +84,8 @@ def run_simple(config, path, send_keys):
 
         if detector is not None:
             monitor = LieAlertMonitor(detector, config.frame_size, lambda: GameWindow(config.window_title),
-                                      on_alarm, config.lie_alert_interval)
+                                      on_alarm, config.lie_alert_interval,
+                                      diagnostic_dir=path.parent / "debug-output" / "lie-alert")
 
         def on_press(key):
             if key == Key.f12:
@@ -98,6 +99,8 @@ def run_simple(config, path, send_keys):
                     paused.clear() if paused.is_set() else paused.set()
             elif key == Key.f9:
                 record.set()
+            elif key == Key.f10 and monitor is not None:
+                monitor.request_snapshot()
 
         listener = Listener(on_press=on_press, on_release=on_release)
         listener.start()
@@ -117,11 +120,16 @@ def run_simple(config, path, send_keys):
         if monitor:
             print(f"测谎标题独立监控：每 {config.lie_alert_interval:g}s 检查，命中后停键、持续声音报警；"
                   "窗口消失也不自动恢复，须人工按 F8。请保持游戏前台且无遮挡。")
+            print(f"测谎模板={path.parent / config.lie_alert_template}；阈值={config.lie_alert_threshold:.3f}；"
+                  f"搜索框={config.lie_alert_roi or '整个游戏客户区'}；F10 保存实际截图与匹配诊断。")
         else:
             print("测谎监控已由配置关闭。")
-        last_status, logged_at = "", float("-inf")
+        last_status, logged_at, alert_logged_at = "", float("-inf"), float("-inf")
         while not stopped.is_set():
             started = time.monotonic()
+            if monitor and started - alert_logged_at >= 5:
+                print(monitor.status(), flush=True)
+                alert_logged_at = started
             if alarm_resume.is_set():
                 alarm_resume.clear()
                 if monitor and monitor.state.acknowledge(focused=window.focused()):
@@ -216,6 +224,7 @@ def main(argv=None):
     group.add_argument("--observe", action="store_true", help="只读取 X，不发送按键（默认）")
     group.add_argument("--calibrate-alert", action="store_true", help="只采集测谎固定标题，保留挂机站位和参数")
     group.add_argument("--check-alert", action="store_true", help="配合 --image 离线检查测谎标题，不发送按键")
+    group.add_argument("--watch-alert", action="store_true", help="只监测真实游戏测谎、显示分数和报警，不发送按键")
     group.add_argument("--test-alert-sound", action="store_true", help="测试声音报警，不截图、不发送按键")
     parser.add_argument("--image", type=Path, help="配合 --calibrate-alert 或 --check-alert 使用原始截图")
     args = parser.parse_args(argv)
@@ -237,11 +246,20 @@ def main(argv=None):
                 sound_alert()
                 time.sleep(.3)
         elif args.check_alert:
-            from .lie_alert import load_detector
+            from .lie_alert import load_detector, save_diagnostic
             from .vision import read_image
 
-            found = load_detector(load_simple(path), path.parent).find(read_image(args.image))
-            print(f"检出测谎标题：分数={found[0]:.3f}，位置={found[1]}" if found else "未检出测谎标题，请核对原始尺寸和采样")
+            detector = load_detector(load_simple(path), path.parent)
+            frame = read_image(args.image)
+            report = detector.inspect(frame)
+            print(report.describe())
+            prefix = save_diagnostic(frame, detector, path.parent / "debug-output" / "lie-alert", "offline")
+            print(f"诊断已保存：{prefix}-match.png（绿色框=检出，橙色框=未通过的最佳候选），详情见同名 .json")
+            return 0 if report.found else 1
+        elif args.watch_alert:
+            from .lie_alert import watch_alert
+
+            watch_alert(load_simple(path), path)
         elif args.setup:
             setup(path)
         else:
