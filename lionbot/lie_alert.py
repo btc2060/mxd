@@ -254,7 +254,8 @@ def sound_alert():
         import winsound
 
         try:
-            winsound.PlaySound(alert_wave(), winsound.SND_MEMORY | winsound.SND_SYNC | winsound.SND_NODEFAULT)
+            # 不设置 SND_ASYNC 时默认同步播放；较旧 Python 没有 SND_SYNC 常量。
+            winsound.PlaySound(alert_wave(), winsound.SND_MEMORY | winsound.SND_NODEFAULT)
         except (OSError, RuntimeError):
             # 普通音频设备不可用时仍尝试旧的本机蜂鸣提醒。
             winsound.Beep(1400, 180)

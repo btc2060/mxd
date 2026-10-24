@@ -411,7 +411,7 @@ class AlertCommandsTests(unittest.TestCase):
     def test_windows_sound_uses_normal_wave_playback_for_remote_audio_capture(self):
         sound = ModuleType("winsound")
         sound.PlaySound, sound.Beep = Mock(), Mock()
-        sound.SND_MEMORY, sound.SND_SYNC, sound.SND_NODEFAULT = 4, 0, 2
+        sound.SND_MEMORY, sound.SND_NODEFAULT = 4, 2
         with patch.dict("sys.modules", {"winsound": sound}):
             sound_alert()
         sound.PlaySound.assert_called_once_with(alert_wave(), 6)
@@ -431,7 +431,7 @@ class AlertCommandsTests(unittest.TestCase):
     def test_wave_playback_failure_falls_back_to_local_beeps(self):
         sound = ModuleType("winsound")
         sound.PlaySound, sound.Beep = Mock(side_effect=RuntimeError("audio device unavailable")), Mock()
-        sound.SND_MEMORY, sound.SND_SYNC, sound.SND_NODEFAULT = 4, 0, 2
+        sound.SND_MEMORY, sound.SND_NODEFAULT = 4, 2
         with patch.dict("sys.modules", {"winsound": sound}):
             sound_alert()
         self.assertEqual(sound.Beep.call_count, 2)
@@ -440,10 +440,23 @@ class AlertCommandsTests(unittest.TestCase):
         sound = ModuleType("winsound")
         sound.PlaySound = Mock(side_effect=RuntimeError("audio unavailable"))
         sound.Beep = Mock(side_effect=OSError("beep unavailable"))
-        sound.SND_MEMORY, sound.SND_SYNC, sound.SND_NODEFAULT = 4, 0, 2
+        sound.SND_MEMORY, sound.SND_NODEFAULT = 4, 2
         with patch.dict("sys.modules", {"winsound": sound}), redirect_stdout(io.StringIO()) as log:
             sound_alert()
         self.assertIn("\a", log.getvalue())
+
+    def test_sound_test_cli_supports_winsound_without_snd_sync(self):
+        # 兼容支持范围内的旧版 Python，不给模拟模块补造可选的新常量。
+        sound = ModuleType("winsound")
+        sound.PlaySound, sound.Beep = Mock(), Mock()
+        sound.SND_MEMORY, sound.SND_NODEFAULT = 4, 2
+        self.assertFalse(hasattr(sound, "SND_SYNC"))
+        with patch.dict("sys.modules", {"winsound": sound}), patch("lionbot.simple.time.sleep"), \
+                patch("lionbot.windows.GameWindow") as window, redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["--test-alert-sound"]), 0)
+        self.assertEqual(sound.PlaySound.call_count, 3)
+        sound.Beep.assert_not_called()
+        window.assert_not_called()
 
     def test_bad_monitor_configuration_is_rejected(self):
         for changes in ({"lie_alert_enabled": "true"}, {"lie_alert_interval": 0},
