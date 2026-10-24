@@ -1,11 +1,14 @@
 """只检测测谎标题、停键报警并等待人工恢复，不操作测谎内容。"""
 from __future__ import annotations
 
+import io
 import json
 import threading
 import time
+import wave
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
@@ -227,12 +230,35 @@ class AlertState:
             return False
 
 
+@lru_cache(maxsize=1)
+def alert_wave():
+    """普通 PCM 音频经默认播放设备输出，便于远程软件采集系统声音。"""
+    rate = 22050
+    count = round(rate * .18)
+    samples = np.arange(count, dtype=np.float64)
+    fade = np.minimum(1., np.minimum(samples, count - 1 - samples) / (rate * .008))
+    first = np.sin(2 * np.pi * 1400 * samples / rate) * fade
+    second = np.sin(2 * np.pi * 900 * samples / rate) * fade
+    pcm = (np.concatenate((first, np.zeros(round(rate * .04)), second)) * 16000).astype("<i2")
+    output = io.BytesIO()
+    with wave.open(output, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(rate)
+        audio.writeframes(pcm.tobytes())
+    return output.getvalue()
+
+
 def sound_alert():
     try:
         import winsound
 
-        winsound.Beep(1400, 180)
-        winsound.Beep(900, 180)
+        try:
+            winsound.PlaySound(alert_wave(), winsound.SND_MEMORY | winsound.SND_SYNC | winsound.SND_NODEFAULT)
+        except (OSError, RuntimeError):
+            # 普通音频设备不可用时仍尝试旧的本机蜂鸣提醒。
+            winsound.Beep(1400, 180)
+            winsound.Beep(900, 180)
     except (ImportError, OSError, RuntimeError):
         print("\a", end="", flush=True)
 

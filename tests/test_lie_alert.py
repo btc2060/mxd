@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+import wave
 from contextlib import ExitStack, redirect_stdout
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -18,7 +19,7 @@ from lionbot.brain import Action
 from lionbot.config import Config
 from lionbot.controls import InputCancelled, InputExecutor
 from lionbot.lie_alert import (AlertState, LieAlertMonitor, TitleDetector,
-                              calibrate_alert, load_detector, sound_alert, watch_alert)
+                              alert_wave, calibrate_alert, load_detector, sound_alert, watch_alert)
 from lionbot.simple import main, run_simple
 from lionbot.simple_cycle import load_simple
 from lionbot.vision import write_image, read_image
@@ -407,12 +408,42 @@ class AlertCommandsTests(unittest.TestCase):
         self.assertEqual(sound.call_count, 3)
         window.assert_not_called()
 
-    def test_windows_sound_uses_two_beeps(self):
+    def test_windows_sound_uses_normal_wave_playback_for_remote_audio_capture(self):
         sound = ModuleType("winsound")
-        sound.Beep = Mock()
+        sound.PlaySound, sound.Beep = Mock(), Mock()
+        sound.SND_MEMORY, sound.SND_SYNC, sound.SND_NODEFAULT = 4, 0, 2
+        with patch.dict("sys.modules", {"winsound": sound}):
+            sound_alert()
+        sound.PlaySound.assert_called_once_with(alert_wave(), 6)
+        sound.Beep.assert_not_called()
+        with wave.open(io.BytesIO(sound.PlaySound.call_args.args[0]), "rb") as audio:
+            self.assertEqual(audio.getnchannels(), 1)
+            self.assertEqual(audio.getsampwidth(), 2)
+            self.assertEqual(audio.getframerate(), 22050)
+            self.assertAlmostEqual(audio.getnframes() / audio.getframerate(), .4)
+            samples = np.frombuffer(audio.readframes(audio.getnframes()), dtype="<i2")
+        first, second = samples[:3969], samples[-3969:]
+        for segment, expected in ((first, 1400), (second, 900)):
+            frequencies = np.fft.rfftfreq(len(segment), 1 / 22050)
+            actual = frequencies[np.argmax(np.abs(np.fft.rfft(segment)))]
+            self.assertAlmostEqual(actual, expected, delta=6)
+
+    def test_wave_playback_failure_falls_back_to_local_beeps(self):
+        sound = ModuleType("winsound")
+        sound.PlaySound, sound.Beep = Mock(side_effect=RuntimeError("audio device unavailable")), Mock()
+        sound.SND_MEMORY, sound.SND_SYNC, sound.SND_NODEFAULT = 4, 0, 2
         with patch.dict("sys.modules", {"winsound": sound}):
             sound_alert()
         self.assertEqual(sound.Beep.call_count, 2)
+
+    def test_all_windows_audio_failures_keep_terminal_bell_and_do_not_crash_alarm_thread(self):
+        sound = ModuleType("winsound")
+        sound.PlaySound = Mock(side_effect=RuntimeError("audio unavailable"))
+        sound.Beep = Mock(side_effect=OSError("beep unavailable"))
+        sound.SND_MEMORY, sound.SND_SYNC, sound.SND_NODEFAULT = 4, 0, 2
+        with patch.dict("sys.modules", {"winsound": sound}), redirect_stdout(io.StringIO()) as log:
+            sound_alert()
+        self.assertIn("\a", log.getvalue())
 
     def test_bad_monitor_configuration_is_rejected(self):
         for changes in ({"lie_alert_enabled": "true"}, {"lie_alert_interval": 0},

@@ -242,7 +242,8 @@ def main(argv=None):
         elif args.test_alert_sound:
             from .lie_alert import sound_alert
 
-            print("播放三次双音警报，请确认扬声器音量。")
+            print("通过 Windows 默认播放设备播放三次双音警报。远程使用时，请在控制端确认能否听到；"
+                  "听到远端扬声器响不代表声音已传回。")
             for _ in range(3):
                 sound_alert()
                 time.sleep(.3)
