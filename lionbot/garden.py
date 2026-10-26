@@ -169,6 +169,7 @@ def main(argv=None):
     parser.add_argument("--config", type=Path, default=Path("config.garden.local.json"))
     actions = parser.add_mutually_exclusive_group()
     for name, help_text in (("setup", "首次采集当前地图、角色身高、食人花、边界和水平 F"),
+                            ("select-area", "只重选主画面并补脚底参考，保留小地图和其他校准"),
                             ("record-route", "重设底层左右掉头点，不手输坐标"),
                             ("measure-teleport", "重测水平 F 位移，不改其他采样"),
                             ("anchor", "只点脚底，补当前地图地形参考"),
@@ -196,10 +197,10 @@ def main(argv=None):
             from .lie_alert import calibrate_alert
 
             calibrate_alert(path, args.image, loader=load_garden, saver=save_garden)
-        elif args.setup or args.record_route or args.measure_teleport or args.anchor or args.sample:
-            from .garden_calibration import setup_garden, record_route, measure_teleport, record_anchor, sample_plant
+        elif args.setup or args.select_area or args.record_route or args.measure_teleport or args.anchor or args.sample:
+            from .garden_calibration import setup_garden, record_route, measure_teleport, record_anchor, sample_plant, select_area
 
-            task = setup_garden if args.setup else record_route if args.record_route else (
+            task = setup_garden if args.setup else select_area if args.select_area else record_route if args.record_route else (
                 measure_teleport if args.measure_teleport else record_anchor if args.anchor else sample_plant)
             task(path)
         else:

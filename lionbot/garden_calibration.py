@@ -10,9 +10,58 @@ import cv2
 
 from .calibrate import fresh, get_position, save_json, select_point, select_roi
 from .garden_cycle import GardenConfig, GardenCycle, load_garden, save_garden
-from .garden_vision import save_garden_anchor
+from .garden_vision import (GardenReferenceError, anchor_metadata_valid, combat_area_problem,
+                            save_garden_anchor)
 from .vision import crop, make_template, measure_world_scale, write_image
 from .windows import GameWindow
+
+
+def choose_combat_area(config, frame):
+    print("现在框选【主画面游戏场景】，不是小地图。包含角色、平台、树木或岩壁；排除聊天和底部状态栏。")
+    print(f"当前主画面={config.combat_roi}；小地图={config.minimap_roi}。橙框为旧主画面，红框为小地图。")
+    preview = frame.copy()
+    for roi, color in ((config.combat_roi, (0, 165, 255)), (config.minimap_roi, (0, 0, 255))):
+        if roi is not None:
+            x, y, w, h = roi
+            cv2.rectangle(preview, (x, y), (x + w - 1, y + h - 1), color, 2)
+    roi = select_roi("MAIN GAME FIELD / NOT minimap / include character and terrain", preview)
+    updated = replace(config, combat_roi=roi)
+    updated.validate()
+    problem = combat_area_problem(updated, frame)
+    if problem:
+        raise ValueError(problem + "；原主画面设置未修改，可用 --select-area 重选")
+    return updated
+
+
+def save_reference(config, path, frame, position, feet):
+    try:
+        save_garden_anchor(config, path.parent, frame, position, feet)
+        return config
+    except GardenReferenceError as error:
+        print(str(error))
+        print("下面可在同一张截图重选主画面，无需重做地图比例、身高或怪物模板。")
+        updated = choose_combat_area(config, frame)
+        save_garden_anchor(updated, path.parent, frame, position, feet)
+        return updated
+
+
+def select_area(path):
+    config = load_garden(path)
+    if config.minimap_roi is None or config.frame_size is None:
+        raise ValueError("请先 --setup 完成小地图范围")
+    window = GameWindow(config.window_title, frame_size=config.frame_size)
+    try:
+        frame = fresh(window, "准备重选主画面；保留已采集的小地图、射程、怪物和路线。请在底层站稳。")
+        position = get_position(frame, config)
+        updated = choose_combat_area(config, frame)
+        if updated.world_pixels_per_x is not None:
+            feet = select_point("Click YOUR feet inside the NEW game field", frame)
+            save_garden_anchor(updated, path.parent, frame, position, feet)
+        save_garden(path, updated)
+        print("主画面已更新；小地图、比例、身高、怪物、左右边界和 F 参数保留。继续 --setup 续做未完成步骤。")
+    finally:
+        window.close()
+        cv2.destroyAllWindows()
 
 
 def previous_configs(root):
@@ -83,7 +132,8 @@ def record_anchor(path):
         frame = fresh(window, "在暗影花园底层站稳，松开全部键；这里只补脚底参考，不需要名牌。")
         position = get_position(frame, config)
         feet = select_point("Click YOUR feet on the bottom platform", frame)
-        save_garden_anchor(config, path.parent, frame, position, feet)
+        config = save_reference(config, path, frame, position, feet)
+        save_garden(path, config)
         print("当前脚底/地形参考已保存；边界、模板和射程未修改。")
     finally:
         window.close()
@@ -114,7 +164,7 @@ def record_route(path, window=None):
         updated = replace(config, left_x=left[0], right_x=right[0], bottom_path=((left[0], y), (right[0], y)))
         updated.validate()
         for position, feet, frame in samples:
-            save_garden_anchor(updated, path.parent, frame, position, feet)
+            updated = save_reference(updated, path, frame, position, feet)
         save_garden(path, updated)
         print(f"底层边界已保存：{left[0]:.4f}～{right[0]:.4f}，Y≈{y:.4f}；只在此范围无限往返。")
     finally:
@@ -177,9 +227,13 @@ def setup_garden(path):
                              frame_size=tuple(frame.shape[1::-1]))
             get_position(frame, config)
             save_garden(path, config)
-        if config.combat_roi is None:
-            config = replace(config, combat_roi=select_roi("Game field excluding chat and bottom HUD", frame))
+        problem = combat_area_problem(config, frame)
+        if problem:
+            print(f"主画面范围需要重选：{problem}")
+            config = choose_combat_area(config, frame)
             save_garden(path, config)
+        else:
+            print(f"复用已保存主画面范围 {config.combat_roi}；如需重选，使用 --select-area。")
         config = inherit_pixels(config, path.parent)
         save_garden(path, config)
         if config.world_pixels_per_x is None or config.attack_range_px is None:
@@ -209,12 +263,14 @@ def setup_garden(path):
                 print(f"当前地图比例 {scale:.1f}px/归一化X，质量 {quality:.2f}；不复用旧地图比例。")
             config = replace(config, player_height_px=height, attack_range_px=reach)
             save_garden(path, config)
-            save_garden_anchor(config, path.parent, first, before, feet)
-        if not (path.parent / config.screen_anchor).exists():
+            config = save_reference(config, path, first, before, feet)
+            save_garden(path, config)
+        if not anchor_metadata_valid(config, path.parent):
             anchor_frame = fresh(window, "在底层站稳，补一张缺失的脚底/地形参考；不重做比例。")
             anchor_position = get_position(anchor_frame, config)
             anchor_feet = select_point("Click YOUR feet for terrain reference", anchor_frame)
-            save_garden_anchor(config, path.parent, anchor_frame, anchor_position, anchor_feet)
+            config = save_reference(config, path, anchor_frame, anchor_position, anchor_feet)
+            save_garden(path, config)
         if not (path.parent / config.template_manifest).exists():
             sample_plant(path, window)
         if config.left_x is None or len(config.bottom_path) < 2:

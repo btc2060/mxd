@@ -17,9 +17,9 @@ from lionbot.brain import Action, Mob, Observation, target_status
 from lionbot.config import Config
 from lionbot.controls import InputExecutor
 from lionbot.garden import main, run_garden
-from lionbot.garden_calibration import inherit_pixels, record_route, measure_teleport, sample_plant, setup_garden
+from lionbot.garden_calibration import inherit_pixels, record_route, measure_teleport, sample_plant, setup_garden, select_area, record_anchor
 from lionbot.garden_cycle import GardenConfig, GardenCycle, load_garden, save_garden
-from lionbot.garden_vision import GardenVision, save_garden_anchor
+from lionbot.garden_vision import GardenReferenceError, GardenVision, combat_area_problem, save_garden_anchor
 from lionbot.lie_alert import AlertState
 from lionbot.plant_vision import PlantColorDetector, plant_masks
 from lionbot.vision import make_template, write_image, detect_monsters
@@ -248,6 +248,116 @@ class GardenTestCase(unittest.TestCase):
 
 
 class GardenFilesTests(GardenTestCase):
+    def large_frame(self, textured=True):
+        image = np.full((768, 1366, 3), SKY, np.uint8)
+        if textured:
+            rng = np.random.default_rng(135)
+            image[170:680] = rng.integers(0, 200, (510, 1366, 3), dtype=np.uint8)
+        image[73:158, 24:181] = 30
+        cv2.rectangle(image, (101, 135), (105, 139), (0, 255, 255), -1)
+        return image
+
+    def large_config(self, bad=False):
+        return config(frame_size=(1366, 768), minimap_roi=(24, 73, 157, 85),
+                      combat_roi=(23, 72, 157, 86) if bad else (0, 0, 1366, 680))
+
+    def test_reported_nearly_identical_rois_are_rejected_before_feature_extraction(self):
+        c, frame = self.large_config(bad=True), self.large_frame()
+        self.assertIn("小地图大面积重合", combat_area_problem(c, frame))
+        with patch("lionbot.garden_vision.save_screen_anchor") as seed, self.assertRaises(GardenReferenceError) as error:
+            save_garden_anchor(c, self.root, frame, (.5, .75), (680, 600))
+        seed.assert_not_called()
+        self.assertIn("--select-area", str(error.exception))
+        diagnostics = list((self.root / "debug-output" / "garden").glob("*.json"))
+        self.assertEqual(len(diagnostics), 1)
+        data = json.loads(diagnostics[0].read_text(encoding="utf-8"))
+        self.assertEqual(data["combat_roi"], [23, 72, 157, 86])
+        self.assertEqual(data["minimap_roi"], [24, 73, 157, 85])
+
+    def test_setup_repairs_reported_roi_and_continues_without_remeasuring_other_steps(self):
+        c, frame = self.large_config(bad=True), self.large_frame()
+        save_garden(self.path, c)
+        manifest = self.root / c.template_manifest
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        write_image(manifest.parent / "plant.png", plant())
+        manifest.write_text(json.dumps([{"file": "plant.png", "feet_offset": [14, 46]}]))
+        before = manifest.read_bytes()
+        with patch("lionbot.garden_calibration.GameWindow"), \
+                patch("lionbot.garden_calibration.fresh", return_value=frame) as capture, \
+                patch("lionbot.garden_calibration.select_roi", return_value=(0, 0, 1366, 680)) as roi, \
+                patch("lionbot.garden_calibration.select_point", return_value=(680, 600)) as feet, \
+                patch("lionbot.garden_calibration.measure_world_scale") as scale, \
+                patch("lionbot.garden_calibration.sample_plant") as sample, \
+                patch("lionbot.garden_calibration.record_route") as route, \
+                patch("lionbot.garden_calibration.measure_teleport") as teleport, \
+                patch("lionbot.garden_calibration.cv2.destroyAllWindows"), redirect_stdout(io.StringIO()):
+            setup_garden(self.path)
+        saved = load_garden(self.path)
+        self.assertEqual(saved, replace(c, combat_roi=(0, 0, 1366, 680)))
+        self.assertEqual(capture.call_count, 2)
+        roi.assert_called_once()
+        feet.assert_called_once()
+        scale.assert_not_called()
+        sample.assert_not_called()
+        route.assert_not_called()
+        teleport.assert_not_called()
+        self.assertEqual(manifest.read_bytes(), before)
+        self.assertTrue(GardenVision(saved, self.root).mapper.references)
+
+    def test_select_area_cli_preserves_minimap_route_range_and_samples(self):
+        c, frame = self.large_config(bad=True), self.large_frame()
+        save_garden(self.path, c)
+        with patch("lionbot.garden_calibration.GameWindow"), \
+                patch("lionbot.garden_calibration.fresh", return_value=frame), \
+                patch("lionbot.garden_calibration.select_roi", return_value=(0, 0, 1366, 680)), \
+                patch("lionbot.garden_calibration.select_point", return_value=(680, 600)), \
+                patch("lionbot.windows.Keyboard") as keyboard, \
+                patch("lionbot.garden_calibration.cv2.destroyAllWindows"), redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["--config", str(self.path), "--select-area"]), 0)
+        self.assertEqual(load_garden(self.path), replace(c, combat_roi=(0, 0, 1366, 680)))
+        keyboard.assert_not_called()
+
+    def test_bad_new_area_preserves_existing_configuration_and_anchor(self):
+        frame, c = scene(self.root)
+        save_garden(self.path, c)
+        before, anchor_before = self.path.read_bytes(), (self.root / c.screen_anchor).read_bytes()
+        with patch("lionbot.garden_calibration.GameWindow"), \
+                patch("lionbot.garden_calibration.fresh", return_value=frame), \
+                patch("lionbot.garden_calibration.select_roi", return_value=c.minimap_roi), \
+                patch("lionbot.garden_calibration.select_point") as feet, \
+                patch("lionbot.garden_calibration.cv2.destroyAllWindows"), redirect_stdout(io.StringIO()), self.assertRaises(ValueError):
+            select_area(self.path)
+        feet.assert_not_called()
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual((self.root / c.screen_anchor).read_bytes(), anchor_before)
+
+    def test_genuinely_featureless_frame_keeps_diagnostics_and_garden_recovery_command(self):
+        c, frame = self.large_config(), self.large_frame(textured=False)
+        with self.assertRaises(GardenReferenceError) as error:
+            save_garden_anchor(c, self.root, frame, (.5, .75), (680, 600))
+        self.assertIn("特征数=0/12", str(error.exception))
+        self.assertNotIn("--calibrate-anchor", str(error.exception))
+        data = json.loads(next((self.root / "debug-output" / "garden").glob("*.json")).read_text(encoding="utf-8"))
+        self.assertGreater(data["search_pixels"], 100000)
+        self.assertEqual(data["feature_count"], 0)
+
+    def test_anchor_failure_can_reselect_area_on_same_frame_instead_of_repeating_capture(self):
+        c, frame = self.large_config(), self.large_frame()
+        frame[:350, :650] = SKY
+        frame[73:158, 24:181] = 30
+        cv2.rectangle(frame, (101, 135), (105, 139), (0, 255, 255), -1)
+        c = replace(c, combat_roi=(0, 0, 600, 300))
+        save_garden(self.path, c)
+        with patch("lionbot.garden_calibration.GameWindow"), \
+                patch("lionbot.garden_calibration.fresh", return_value=frame) as capture, \
+                patch("lionbot.garden_calibration.select_point", return_value=(200, 220)), \
+                patch("lionbot.garden_calibration.select_roi", return_value=(0, 0, 1366, 680)), \
+                patch("lionbot.garden_calibration.cv2.destroyAllWindows"), redirect_stdout(io.StringIO()):
+            record_anchor(self.path)
+        capture.assert_called_once()
+        self.assertEqual(load_garden(self.path).combat_roi, (0, 0, 1366, 680))
+        self.assertTrue((self.root / c.screen_anchor).exists())
+
     def test_config_roundtrip_and_incomplete_config_block_run(self):
         save_garden(self.path, config())
         self.assertEqual(load_garden(self.path), config())
