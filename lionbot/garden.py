@@ -81,6 +81,7 @@ def run_garden(config, path, send_keys=False, show=False):
               f"只按 D，每组 {config.attack_burst_shots} 次，间隔 {config.attack_interval:g}s。")
         print(f"附近两侧清完后继续原路线；像素射程 {config.attack_range_px:.0f}px，高度为脚底到头顶 "
               f"{config.player_height_px:.0f}px；局部模板＋紫红花头/绿叶识别，{config.fps:g}fps。")
+        print(f"黄点原地停留超过 {config.stationary_timeout_seconds:g}s 就中断清怪、连续步行脱离，再恢复巡逻；暂停不累计。")
         print(f"挂机开始 Alt 一次，此后每 {config.alt_interval:g}s 一次；没有 A、跳跃、爬绳或上层路线。")
         if config.teleport_enabled and config.teleport_max_dx is not None:
             print(f"中段方向键＋F，冷却 {config.teleport_cooldown:g}s；边缘只步行，瞬移后等待落点重新识别。")
@@ -124,7 +125,10 @@ def run_garden(config, path, send_keys=False, show=False):
                 continue
             frame = window.capture()
             obs = vision.observe(frame, focused=window.focused(), now=time.monotonic())
+            was_recovering = brain.recovering
             action = brain.decide(obs, time.monotonic())
+            if brain.recovering != was_recovering:
+                vision.reset()  # 脱离前后清掉旧目标追踪，重新确认当前画面。
             if action.reason != last_reason or started - last_log >= 2:
                 position = f"({obs.position[0]:.4f},{obs.position[1]:.4f})" if obs.position else "黄点丢失"
                 print(f"pos={position} move={brain.direction} face={brain.facing or '?'} "

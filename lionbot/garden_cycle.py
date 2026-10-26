@@ -26,7 +26,7 @@ class GardenConfig:
     world_pixels_per_x: float | None = None
     player_height_px: float = 64.
     attack_range_px: float | None = None
-    attack_burst_shots: int = 3
+    attack_burst_shots: int = 1
     attack_interval: float = .9
     attack_hold: float = .08
     face_hold: float = .06
@@ -35,6 +35,7 @@ class GardenConfig:
     clear_frames: int = 3
     fps: float = 10.
     walk_stuck_seconds: float = 6.
+    stationary_timeout_seconds: float = 5.
     teleport_enabled: bool = True
     teleport_max_dx: float | None = None
     teleport_cooldown: float = 1.5
@@ -68,7 +69,8 @@ class GardenConfig:
             raise ValueError("window_title 不能为空")
         for name in ("left_x", "right_x", "floor_tolerance", "boundary_margin", "world_pixels_per_x",
                      "player_height_px", "attack_range_px", "attack_interval", "attack_hold", "face_hold",
-                     "alt_interval", "clear_seconds", "fps", "walk_stuck_seconds", "lie_alert_interval", "lie_alert_threshold",
+                     "alt_interval", "clear_seconds", "fps", "walk_stuck_seconds", "stationary_timeout_seconds",
+                     "lie_alert_interval", "lie_alert_threshold",
                      "teleport_max_dx", "teleport_cooldown", "teleport_settle"):
             value = getattr(self, name)
             if value is None and name in ("left_x", "right_x", "world_pixels_per_x", "attack_range_px", "teleport_max_dx"):
@@ -82,6 +84,8 @@ class GardenConfig:
             raise ValueError("清场确认须至少两帧，时间须为 (0, 5] 秒")
         if not 0 < self.floor_tolerance <= .06 or not 0 < self.boundary_margin <= .03 or self.walk_stuck_seconds <= 0:
             raise ValueError("底层容差、边界内缩或步行受阻时间不合法")
+        if self.stationary_timeout_seconds <= 0:
+            raise ValueError("stationary_timeout_seconds 必须大于 0 秒")
         for name, length in (("frame_size", 2), ("minimap_roi", 4), ("combat_roi", 4), ("lie_alert_roi", 4)):
             value = getattr(self, name)
             if value is not None:
@@ -178,8 +182,38 @@ class GardenCycle:
         self.clear_at = self.clear_frame_at = self.pending_at = None
         self.clear_count = 0
         self.walk_x = self.walk_at = None
+        self.reset_position_watch()
         self.blocked = False
         # 实际发出的攻击次数及 Alt 计时保留；恢复时重新核对攻击范围。
+
+    def reset_position_watch(self):
+        self.stationary_x = self.stationary_at = None
+        self.recovery_origin_x = None
+
+    @property
+    def recovering(self):
+        return self.recovery_origin_x is not None
+
+    def watch_position(self, x, now):
+        # 黄点一像素左右的抖动不能把原地清怪的计时不断清零。
+        if self.stationary_x is None or abs(x - self.stationary_x) >= 2 / self.c.minimap_roi[2]:
+            self.stationary_x, self.stationary_at = x, now
+
+    def recover_position(self, x, now):
+        if not self.recovering:
+            if now - self.stationary_at < self.c.stationary_timeout_seconds:
+                return None
+            self.cancel_combat()
+            self.recovery_origin_x = x
+        # 连续走出约一个身高的距离，至少三格小地图像素；不靠一次方向键点按判定成功。
+        distance = min(max(3 / self.c.minimap_roi[2], self.c.player_height_px / self.c.world_pixels_per_x),
+                       (self.c.right_x - self.c.left_x) / 4)
+        if abs(x - self.recovery_origin_x) >= distance:
+            self.recovery_origin_x = None
+            self.stationary_x, self.stationary_at = x, now
+            self.walk_x = self.walk_at = None
+            return Action("wait", reason="黄点确认已离开卡住位置，重新识别并恢复原巡逻路线")
+        return self.walk(x, now, f"原地停留超过 {self.c.stationary_timeout_seconds:g}s，强制连续步行脱离；暂不清怪，边界照常掉头")
 
     def expected_y(self, x):
         return float(np.interp(x, [p[0] for p in self.c.bottom_path], [p[1] for p in self.c.bottom_path]))
@@ -204,7 +238,9 @@ class GardenCycle:
         if not self.on_bottom(obs.position):
             self.cancel_combat()
             self.walk_at = self.walk_x = None
+            self.reset_position_watch()
             return Action("wait", reason=f"不在已采集底层：Y={y:.4f}，路线期望 Y={self.expected_y(x):.4f}；松键等待回到底层")
+        self.watch_position(x, now)
         if self.blocked:
             return Action("wait", reason="步行持续受阻，已松键；请检查地形，F8 暂停后恢复")
         if now < self.busy_until:
@@ -237,6 +273,9 @@ class GardenCycle:
         if self.next_alt is None or now >= self.next_alt:
             self.walk_at = self.walk_x = None
             return Action("alt", reason="挂机开始或定时 Alt；只按实际发送时间计时")
+        recovery = self.recover_position(x, now)
+        if recovery is not None:
+            return recovery
         if obs.player_feet is None:
             self.cancel_combat()
             return self.walk(x, now, "黄点导航继续巡逻；攻击等待地形脚底定位恢复，可用 --anchor 补参考")

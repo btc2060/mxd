@@ -81,16 +81,19 @@ class GardenCycleTests(unittest.TestCase):
         c = config(teleport_enabled=False, clear_seconds=.3)
         brain = GardenCycle(c, start_alt=False)
         left, right = Mob((250, 300)), Mob((390, 300))
-        now, actions, last_attack = 0., [], -100.
-        for mobs in ((right, left),) * 12 + ((),) * 7:
-            obs = observation(mobs=mobs)
+        now, x, shots, actions, last_attack = 0., .5, 0, [], -100.
+        for _ in range(45):
+            obs = observation(x=x, mobs=(right, left) if shots < 2 else ())
             action = brain.decide(obs, now)
             actions.append(action)
             if action.kind == "attack":
                 self.assertGreaterEqual(now - last_attack, .9 - 1e-9)
                 last_attack = now
+                shots += 1
             brain.executed(action, now, obs)
-            now += .91
+            if action.kind == "walk":
+                x += .006
+            now += .1
         attacks = [a for a in actions if a.kind == "attack"]
         self.assertTrue(attacks)
         self.assertIn("left", [a.direction for a in attacks])
@@ -100,7 +103,7 @@ class GardenCycleTests(unittest.TestCase):
         self.assertTrue(all(a.kind not in ("attack_a", "grab", "step_jump", "climb", "top_teleport") for a in actions))
 
     def test_confirmed_burst_finishes_through_temporary_missing_animation(self):
-        brain = GardenCycle(config(teleport_enabled=False), start_alt=False)
+        brain = GardenCycle(config(teleport_enabled=False, attack_burst_shots=3), start_alt=False)
         brain.facing = "right"
         first = observation(mobs=[Mob((390, 300))])
         action = brain.decide(first, 0)
@@ -115,6 +118,138 @@ class GardenCycleTests(unittest.TestCase):
         self.assertEqual(brain.decide(observation(), 2.73).kind, "wait")
         self.assertEqual(brain.decide(observation(), 2.84).kind, "wait")
         self.assertEqual(brain.decide(observation(), 3.25).kind, "walk")
+
+    def test_default_single_d_does_not_finish_old_three_shot_burst_after_kill(self):
+        brain = GardenCycle(config(teleport_enabled=False), start_alt=False)
+        brain.facing = "right"
+        obs = observation(mobs=[Mob((390, 300))])
+        first = brain.decide(obs, 0)
+        self.assertEqual(first.kind, "attack")
+        brain.executed(first, 0, obs)
+        self.assertFalse(brain.burst_direction)
+        actions = [brain.decide(observation(), t) for t in (.91, 1.01, 1.42)]
+        self.assertEqual([a.kind for a in actions], ["wait", "wait", "walk"])
+
+    def test_reported_two_hour_persistent_target_cannot_trap_patrol_in_attack_loop(self):
+        c = config(minimap_roi=(24, 73, 157, 85), left_x=.04777070063694268,
+                   right_x=.9394904458598726,
+                   bottom_path=((.04777070063694268, .7941176470588235),
+                                (.9394904458598726, .7941176470588235)),
+                   world_pixels_per_x=2511.1217070204916, player_height_px=63,
+                   attack_range_px=270.2462171489503, face_hold=.08)
+        brain = GardenCycle(c, start_alt=False)
+        brain.direction, brain.facing = "left", "right"
+        brain.completed_round_trips = 142
+        clock = Clock()
+        clock.now = 7200.
+        keyboard = Keyboard(clock)
+        executor = InputExecutor(keyboard, c.vision_config(), clock=clock.time, sleep=clock.sleep)
+        x, actions, recovered = .0924, [], False
+        for _ in range(100):
+            obs = observation(x=x, y=.7941176470588235, mobs=[Mob((390, 300))])
+            now = clock.time()
+            action = brain.decide(obs, now)
+            actions.append((now, action))
+            brain.executed(action, executor.execute(action), obs)
+            if action.kind == "walk":
+                self.assertEqual(action.direction, "left")
+                self.assertEqual(keyboard.held, {"left"})
+                x -= .0064
+            if "恢复原巡逻" in action.reason:
+                recovered = True
+                break
+            clock.sleep(.1)
+        executor.stop()
+        attacks = [t for t, a in actions if a.kind == "attack"]
+        moves = [t for t, a in actions if a.kind == "walk"]
+        self.assertTrue(attacks)
+        self.assertGreaterEqual(moves[0] - 7200, 5)
+        self.assertLess(moves[0] - 7200, 6)
+        self.assertTrue(recovered)
+        self.assertGreaterEqual(.0924 - x, 63 / c.world_pixels_per_x)
+        self.assertEqual(brain.direction, "left")
+        self.assertEqual(brain.completed_round_trips, 142)
+        self.assertFalse(brain.burst_direction)
+        self.assertFalse(keyboard.held)
+        self.assertTrue(all(a.kind in ("wait", "attack", "walk") for _, a in actions))
+
+    def test_stationary_timeout_is_configurable_and_ignores_one_pixel_jitter(self):
+        c = config(stationary_timeout_seconds=2)
+        brain = GardenCycle(c, start_alt=False)
+        brain.facing = "right"
+        for now in (0, .95, 1.9):
+            obs = observation(x=.5 + (1 / 140 if now == .95 else 0), mobs=[Mob((390, 300))])
+            action = brain.decide(obs, now)
+            brain.executed(action, now, obs)
+        # 当前 D 间隔结束后，先脱离而不是继续开下一组。
+        action = brain.decide(observation(mobs=[Mob((390, 300))]), 2.81)
+        self.assertEqual((action.kind, action.direction), ("walk", "right"))
+        self.assertIn("2s", action.reason)
+        self.assertTrue(brain.recovering)
+
+    def test_watchdog_also_breaks_pending_clear_confirmation_loop(self):
+        brain = GardenCycle(config(), start_alt=False)
+        brain.facing = "right"
+        first = observation(mobs=[Mob((390, 300))])
+        brain.executed(brain.decide(first, 0), 0, first)
+        pending = observation(mobs=[Mob((390, 300), confirmed=False)])
+        self.assertEqual(brain.decide(pending, 1).kind, "wait")
+        action = brain.decide(pending, 5.01)
+        self.assertEqual(action.kind, "walk")
+        self.assertTrue(brain.recovering)
+        self.assertFalse(brain.clearing)
+
+    def test_actual_position_progress_resets_stationary_watch(self):
+        brain = GardenCycle(config(teleport_enabled=False), start_alt=False)
+        for now, x in ((0, .5), (4.9, .52), (9.8, .54)):
+            action = brain.decide(observation(x=x), now)
+            self.assertEqual(action.kind, "walk")
+            self.assertNotIn("原地停留", action.reason)
+            brain.executed(action, now, observation(x=x))
+        self.assertFalse(brain.recovering)
+
+    def test_recovery_keeps_boundaries_alt_and_missing_screen_location_guards(self):
+        brain = GardenCycle(config(), start_alt=False)
+        brain.decide(observation(x=.88), 0)
+        brain.next_alt = 5
+        obs = observation(x=.88, feet=None, mobs=[Mob((390, 300))])
+        alt = brain.decide(obs, 5.01)
+        self.assertEqual(alt.kind, "alt")
+        brain.executed(alt, 5.01, obs)
+        move = brain.decide(obs, 5.2)
+        self.assertEqual((move.kind, move.direction), ("walk", "right"))
+        brain.executed(move, 5.2, obs)
+        edge = observation(x=.895, feet=None, mobs=[Mob((390, 300))])
+        turn = brain.decide(edge, 5.3)
+        self.assertEqual((turn.kind, turn.direction), ("walk", "left"))
+        self.assertTrue(brain.recovering)
+        self.assertEqual(brain.next_alt, 195.01)
+
+    def test_pause_loss_and_other_floor_disarm_watchdog_before_resuming(self):
+        invalid = (Observation(None, None), observation(focused=False), observation(y=.5))
+        for bad in invalid:
+            with self.subTest(bad=bad):
+                brain = GardenCycle(config(), start_alt=False)
+                brain.decide(observation(), 0)
+                self.assertEqual(brain.decide(observation(), 5).kind, "walk")
+                self.assertTrue(brain.recovering)
+                self.assertEqual(brain.decide(bad, 5.1).kind, "wait")
+                self.assertFalse(brain.recovering)
+                brain.decide(observation(), 7200)
+                self.assertFalse(brain.recovering)
+                brain.suspend()
+                brain.decide(observation(), 14400)
+                self.assertFalse(brain.recovering)
+
+    def test_physical_obstruction_still_stops_for_inspection_during_recovery(self):
+        brain = GardenCycle(config(), start_alt=False)
+        brain.decide(observation(), 0)
+        obs = observation()
+        move = brain.decide(obs, 5.01)
+        brain.executed(move, 5.01, obs)
+        blocked = brain.decide(obs, 11.02)
+        self.assertEqual(blocked.kind, "wait")
+        self.assertTrue(brain.blocked)
 
     def test_knockback_across_target_rechecks_side_before_attacking(self):
         brain = GardenCycle(config(), start_alt=False)
@@ -367,7 +502,9 @@ class GardenFilesTests(GardenTestCase):
         for changes in ({"left_x": .95}, {"attack_burst_shots": True}, {"attack_interval": .1},
                         {"world_pixels_per_x": float("nan")}, {"minimap_roi": (0, 0, 900, 10)},
                         {"bottom_path": ((.9, .75), (.1, .75))}, {"teleport_cooldown": .1},
-                        {"lie_alert_enabled": "true"}):
+                        {"lie_alert_enabled": "true"}, {"stationary_timeout_seconds": 0},
+                        {"stationary_timeout_seconds": -1}, {"stationary_timeout_seconds": True},
+                        {"stationary_timeout_seconds": float("nan")}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 config(**changes).validate()
 
