@@ -377,7 +377,9 @@ class Vision:
                 # 世界坐标来自小地图，剩余的主画面位移是镜头滚动。
                 shift = (player[0] - self.previous.player_feet[0]
                          - (position[0] - self.previous.position[0]) * self.c.world_pixels_per_x,
-                         player[1] - self.previous.player_feet[1])
+                         player[1] - self.previous.player_feet[1]
+                         - (position[1] - self.previous.position[1]) * self.c.world_pixels_per_x
+                         * self.c.minimap_roi[3] / self.c.minimap_roi[2])
         self.strong = [(shift_detection(d, *shift), at) for d, at in self.strong
                        if now - at <= self.c.hurt_recovery_seconds]
         # 低阈值只在已确认怪物附近使用；受击匹配不延长正常姿态的有效期。

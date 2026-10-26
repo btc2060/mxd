@@ -1,4 +1,4 @@
-"""食人花的局部搜索范围与基于样本尺寸的棕色花头、绿叶补识别。"""
+"""食人花局部搜索；基于样本尺寸、棕色/紫红花头与绿叶补识别。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -30,9 +30,14 @@ def attack_search_roi(player, config: Config, templates):
     return intersect_roi((x0, y0, x1 - x0, y1 - y0), config.combat_roi)
 
 
-def plant_masks(image):
+def plant_masks(image, head_color="brown"):
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    brown = cv2.inRange(hsv, np.array([2, 65, 20]), np.array([30, 255, 180]))
+    if head_color == "magenta":
+        brown = cv2.inRange(hsv, np.array([135, 100, 65]), np.array([179, 255, 255]))
+    elif head_color == "brown":
+        brown = cv2.inRange(hsv, np.array([2, 65, 20]), np.array([30, 255, 180]))
+    else:
+        raise ValueError("花头颜色只支持 brown 或 magenta")
     green = cv2.inRange(hsv, np.array([35, 75, 40]), np.array([90, 255, 255]))
     return brown, green
 
@@ -74,11 +79,12 @@ class ColorCandidate:
 
 
 class PlantColorDetector:
-    def __init__(self, templates):
+    def __init__(self, templates, head_color="brown"):
+        self.head_color = head_color
         self.models = []
         for template in templates:
-            brown, green = plant_masks(template.color)
-            # 采样里较大的棕色轮廓才是花头；不从细小地砖/文字训练模型。
+            brown, green = plant_masks(template.color, head_color)
+            # 采样里较大的花头颜色轮廓才是目标；不从细小地砖/文字训练模型。
             choices = sorted(head_contours(brown), key=lambda item: cv2.contourArea(item[0]), reverse=True)
             for contour, (x, y, w, h) in choices[:1]:
                 _, side = leaf_side(green, (x, y, w, h))
@@ -89,7 +95,7 @@ class PlantColorDetector:
         if roi is None or not self.models:
             return []
         rx, ry, rw, rh = roi
-        brown, green = plant_masks(frame[ry:ry + rh, rx:rx + rw])
+        brown, green = plant_masks(frame[ry:ry + rh, rx:rx + rw], self.head_color)
         if excluded_roi is not None:
             excluded = intersect_roi(roi, excluded_roi)
             if excluded is not None:

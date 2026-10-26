@@ -264,6 +264,17 @@ def sound_alert():
         print("\a", end="", flush=True)
 
 
+def beep_alert():
+    """保留用户已验证可经 UU 远程转发的原始 Beep 双音。"""
+    try:
+        import winsound
+
+        winsound.Beep(1400, 180)
+        winsound.Beep(900, 180)
+    except (ImportError, OSError, RuntimeError):
+        print("\a", end="", flush=True)
+
+
 class LieAlertMonitor:
     def __init__(self, detector, frame_size, window_factory, on_alarm, interval=.25, sound=sound_alert,
                  diagnostic_dir=None):
@@ -397,7 +408,7 @@ def watch_alert(config, path):
         listener.stop()
 
 
-def calibrate_alert(path: Path, image_path=None):
+def calibrate_alert(path: Path, image_path=None, *, loader=None, saver=None):
     from dataclasses import replace
     from .calibrate import fresh, select_roi
     from .simple import save_simple
@@ -405,7 +416,7 @@ def calibrate_alert(path: Path, image_path=None):
     from .vision import crop, read_image, write_image
     from .windows import GameWindow
 
-    config = load_simple(path)
+    config = (loader or load_simple)(path)
     window = None
     try:
         if image_path is not None:
@@ -418,7 +429,7 @@ def calibrate_alert(path: Path, image_path=None):
         title = crop(frame, roi)
         TitleDetector(title)
         write_image(path.parent / config.lie_alert_template, title)
-        save_simple(path, replace(config, lie_alert_enabled=True))
+        (saver or save_simple)(path, replace(config, lie_alert_enabled=True))
         print("测谎标题已保存，站位和攻击参数保留。请先 --test-alert-sound 检查声音，再启动 --run。")
     finally:
         if window is not None:

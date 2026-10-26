@@ -6,5 +6,7 @@ config.local.json.*.bak
 config.plants.local.json
 config.plants.local.json.*.bak
 config.simple.local.json
+config.garden*.local.json
+config.garden*.local.json.*.bak
 calibration/
 debug-output/
