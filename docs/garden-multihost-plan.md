@@ -1,11 +1,13 @@
-# Garden 多机报警方案（设计稿，尚未实现）
+# Garden 多机报警方案
+
+已按此方案实现独立 `lionfleet` 入口，安装、文件下载和可直接执行的命令见 [FLEET_SETUP.md](../FLEET_SETUP.md)。本文保留架构和验收依据。
 
 目标：每台 Windows 主机各自运行现有 Garden，只把状态和测谎报警发给一台接收电脑。接收电脑明确显示和播报机号，操作者通过 KVM 或 UU 切到对应主机，手动处理测谎。第一版不自动操作测谎，不通过网络发送游戏操作或恢复指令。
 
 ## 保留单机版
 
 - 单机基线：`306b9e84090249eac06b01f7339bdf0cd18e5112`，标签 `singlehost-garden-20261027`。
-- 多机开发分支：`multihost-garden`。本设计阶段不修改 `lionbot/` 或现有配置、模板。
+- 多机开发分支：`multihost-garden`。多机代码在 `lionfleet/`，不修改 `lionbot/` 或现有 Garden 配置、模板。
 - 单机仍用 `python.exe -m lionbot.garden --run`；新多机版本另设 `lionfleet` 入口，部署到另一个文件夹，例如 `mxd-multi`，不要覆盖 `mxd-single`。
 - Git 不保存本机 `config.garden.local.json`、`calibration/`、`.venv/`。云端有用户此前上传的一份配置，但没有游戏电脑上的完整模板和地形参考；完整本机备份仍须在该电脑上复制整个旧目录。
 
@@ -77,7 +79,7 @@ KVM 管画面和人工输入，局域网管报警，二者独立。主机 HDMI �
 
 心跳是独立线程，但还要携带主循环和测谎扫描的更新时间：不能因为发送线程仍活着，就把截图线程卡死显示为“正常”。面板至少区分运行、人工暂停、测谎待处理、截图／程序故障、失焦、失联。进程整体崩溃由心跳超时发现。
 
-每个包控制在约 1KB 以内，只发机号、状态、事件号和短原因，不用 UDP 发截图。诊断截图继续保存在报警主机，按机号通过 UU 查看。接收端只接受登记机号和约定格式的状态消息，不执行收到的文字或命令。
+普通状态包约 1KB，协议最多接受 8KB，只发机号、状态、事件号和短原因，不用 UDP 发截图。诊断截图继续保存在报警主机，按机号通过 UU 查看。接收端只接受登记机号和约定格式的状态消息，不执行收到的文字或命令。
 
 ## 声音和面板
 
@@ -91,7 +93,7 @@ KVM 管画面和人工输入，局域网管报警，二者独立。主机 HDMI �
 
 现有 `config.garden.local.json` 严格校验字段，**不要把机号和网络字段直接加进去**。保留其全部原参数，多机通讯单独配置。
 
-拟新增文件（尚未实现，不是当前可执行命令）：
+已新增的主要文件：
 
 ```text
 lionfleet/
@@ -99,6 +101,9 @@ lionfleet/
   transport.py     UDP、ACK、重试、心跳；不发送游戏操作
   receiver.py      接收、状态面板、声音队列、日志
   protocol.py      消息格式、校验、去重
+  store.py         接收端报警持久化、在线状态
+  config.py        两端独立配置
+  speech.py        声音及公平播报调度
 config.machine.example.json
 config.receiver.example.json
 ```
@@ -119,10 +124,9 @@ config.receiver.example.json
 
 其他主机只改机号、名称和端口；接收端登记相同映射。接收端不需要 OpenCV、MSS 或游戏客户端，可以使用标准 Python 的 socket、threading、queue、tkinter、winsound 和系统语音；挂机主机沿用原依赖，第一版不加消息中间件或数据库。
 
-多机入口拟使用：
+多机入口：
 
 ```powershell
-# 以下命令为实现目标，当前代码中尚不存在
 python.exe -m lionfleet.receiver --config config.receiver.local.json
 python.exe -m lionfleet.garden --config config.garden.local.json --machine-config config.machine.local.json --run
 ```

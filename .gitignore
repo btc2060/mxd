@@ -10,3 +10,8 @@ config.garden*.local.json
 config.garden*.local.json.*.bak
 calibration/
 debug-output/
+config.machine.local.json
+config.receiver.local.json
+state/
+logs/
+dist/

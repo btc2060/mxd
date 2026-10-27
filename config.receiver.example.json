@@ -1,0 +1,19 @@
+{
+  "bind_ip": "0.0.0.0",
+  "port": 27676,
+  "offline_seconds": 10.0,
+  "repeat_alarm_seconds": 8.0,
+  "speech_enabled": true,
+  "state_file": "state/receiver.json",
+  "log_file": "logs/receiver.jsonl",
+  "machines": [
+    {"machine_id": "M01", "machine_name": "1号机", "kvm_port": 1, "alarm_wav": ""},
+    {"machine_id": "M02", "machine_name": "2号机", "kvm_port": 2, "alarm_wav": ""},
+    {"machine_id": "M03", "machine_name": "3号机", "kvm_port": 3, "alarm_wav": ""},
+    {"machine_id": "M04", "machine_name": "4号机", "kvm_port": 4, "alarm_wav": ""},
+    {"machine_id": "M05", "machine_name": "5号机", "kvm_port": 5, "alarm_wav": ""},
+    {"machine_id": "M06", "machine_name": "6号机", "kvm_port": 6, "alarm_wav": ""},
+    {"machine_id": "M07", "machine_name": "7号机", "kvm_port": 7, "alarm_wav": ""},
+    {"machine_id": "M08", "machine_name": "8号机", "kvm_port": 8, "alarm_wav": ""}
+  ]
+}

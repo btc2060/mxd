@@ -1,0 +1,13 @@
+{
+  "machine_id": "M01",
+  "machine_name": "1号机",
+  "kvm_port": 1,
+  "receiver_ip": "192.168.1.10",
+  "receiver_port": 27676,
+  "heartbeat_seconds": 2.0,
+  "receiver_timeout_seconds": 15.0,
+  "startup_timeout_seconds": 20.0,
+  "loop_timeout_seconds": 8.0,
+  "local_sound": true,
+  "state_directory": "state"
+}
