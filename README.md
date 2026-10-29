@@ -56,6 +56,46 @@ python.exe -m lionbot.garden --run --show
 
 **测谎报警继续保留。** 默认复用已有 `calibration/lie-alert-title.png`，绑定与巡逻相同的游戏窗口，沿用已验证的 **Beep 双音**。检出后立即停键、持续报警，须手动处理；F8 静音，标题消失且画面有效后再次 F8 人工恢复。F10 保存测谎诊断，F12 退出。没有标题模板时先运行 `python.exe -m lionbot.garden --calibrate-alert --image .\测谎.png`，不会自动操作测谎内容。仅测试声音：`python.exe -m lionbot.garden --test-alert-sound`。
 
+### 单机可选：测谎后断网停机
+
+新增参数只用于单机 `lionbot.garden`，不更改多机分支或现有地图参数。不带参数仍是原来的声音报警、暂停和人工恢复。
+
+在 **Windows 管理员终端**中启动：
+
+```powershell
+python.exe -m lionbot.garden --run --cutnet
+```
+
+`--cutnet` 必须与 `--run` 一起使用，且 `lie_alert_enabled=true`。仍由原检测器匹配固定测谎标题；命中后先停止游戏按键，然后禁用本机当前已连接、已启用的物理网卡（包括有线和 Wi-Fi），结束本次挂机，不播放测谎报警音，不自动重连或重新挂机。普通截图异常只停键提示，不会触发断网。它不会操作测谎图形，也不表示通过了验证；服务端如何处理断线、是否保留验证或计为失败，由游戏决定。
+
+先退出其他挂机进程，用下列命令独立测试真实断网，**不需要打开游戏或完成校准**：
+
+```powershell
+python.exe -m lionbot.garden --testcutnet
+```
+
+打印网卡清单后等待 3 秒执行，可 Ctrl+C 取消。**这会真实切断本机网络和 UU／其他远程连接**，请在能用本地键鼠或 KVM 操作时测试，不要把远程连接当作唯一恢复手段。不会自动启用网卡。
+
+断网前，程序必须成功写入当前电脑及网卡 GUID 的恢复记录：`debug-output/garden/network-cut.json`。文件写入失败则不禁用网卡；部分网卡操作失败时保留记录、报告错误，挂机仍已停止。有未恢复记录时拒绝再次覆盖，先手动恢复。
+
+在同一项目目录、本机管理员终端恢复：
+
+```powershell
+python.exe -m lionbot.garden --restorenet
+```
+
+恢复命令只启用记录中的网卡，不启动或恢复挂机，也不会启用原先已被禁用、未写入记录的其他网卡。使用自定义 `--config` 路径时，测试、挂机及恢复都使用同一个配置路径，记录放在配置文件所在目录下。
+
+如游戏识别依赖不可用，还可以用纯标准库恢复：
+
+```powershell
+python.exe -m lionbot.network_cut --restore --record .\debug-output\garden\network-cut.json
+```
+
+或在本机按 **Win+R → `ncpa.cpl`**，手动启用被禁用的网卡。网卡启用后获取地址／联网可能需要一点时间，需自行检查网络和游戏状态。不要删除恢复记录来尝试重新挂机。
+
+断网及恢复的自动测试只使用模拟网卡和模拟 PowerShell，云端不会真实禁用网卡；Windows 网卡驱动与实际断网效果须通过本机 `--testcutnet` 验证。
+
 主要参数见 [`config.garden.example.json`](config.garden.example.json)：
 
 | 参数 | 默认值 / 来源 | 含义 |

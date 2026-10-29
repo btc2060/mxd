@@ -13,7 +13,7 @@ from .garden_cycle import GardenCycle, load_garden, save_garden
 from .garden_vision import GardenVision
 
 
-def run_garden(config, path, send_keys=False, show=False):
+def run_garden(config, path, send_keys=False, show=False, *, cutnet=False):
     from .lie_alert import LieAlertMonitor, beep_alert, load_detector
     from .windows import GameWindow, Keyboard, require_windows
 
@@ -21,9 +21,20 @@ def run_garden(config, path, send_keys=False, show=False):
     from pynput.keyboard import Key, Listener
 
     config.validate(ready=True)
+    if cutnet and (not send_keys or not config.lie_alert_enabled):
+        raise ValueError("--cutnet 只用于 --run，且 lie_alert_enabled 必须为 true")
     detector = load_detector(config, path.parent) if config.lie_alert_enabled else None
+    network = None
+    if cutnet:
+        from .network_cut import NetworkSwitch
+
+        network = NetworkSwitch(path.parent / "debug-output/garden/network-cut.json")
+        targets = network.prepare()
+        print("已启用断网停机模式；命中测谎后停止挂机、禁用当前已连接的物理网卡，不自动重连。", flush=True)
+        print("当前网卡：" + "、".join(item["name"] for item in targets) + "；UU 也会断开，请确保可用本地键鼠／KVM 恢复。", flush=True)
     window = GameWindow(config.window_title, frame_size=config.frame_size)
     stopped, paused, acknowledge = (threading.Event() for _ in range(3))
+    cut_requested = threading.Event()
     executor = listener = monitor = guard = None
     original_threads = cv2.getNumThreads()
     preview_open = False
@@ -42,16 +53,39 @@ def run_garden(config, path, send_keys=False, show=False):
         vision = GardenVision(config, path.parent)
         brain = GardenCycle(config, start_alt=send_keys)
 
+        def request_cut():
+            cut_requested.set()
+            paused.set()
+            stopped.set()
+            if executor:
+                executor.stop()
+            print("已匹配测谎标题：停止全部游戏按键，执行本机断网并结束挂机；不会自动重连。", flush=True)
+
         def on_alarm(reason):
+            if cut_requested.is_set():
+                return
+            if cutnet and reason == "检测到测谎窗口":
+                request_cut()
+                return
             paused.set()
             if executor:
                 executor.stop()
             print(f"警报：{reason}！已停键，持续 Beep 报警；F8 静音，手动处理完、窗口消失后再 F8 恢复。", flush=True)
 
+        def alarm_sound():
+            # Do not emit even the first beep while the callback is being dispatched.
+            if cut_requested.is_set():
+                return
+            if cutnet and monitor is not None:
+                with monitor.state.lock:
+                    if monitor.state.reason == "检测到测谎窗口":
+                        return
+            beep_alert()
+
         if detector is not None:
             monitor = LieAlertMonitor(detector, config.frame_size,
                                       lambda: GameWindow(config.window_title, hwnd=window.hwnd), on_alarm,
-                                      config.lie_alert_interval, sound=beep_alert,
+                                      config.lie_alert_interval, sound=alarm_sound if cutnet else beep_alert,
                                       diagnostic_dir=path.parent / "debug-output" / "lie-alert")
         if send_keys:
             executor = InputExecutor(Keyboard(), config.vision_config(),
@@ -64,6 +98,8 @@ def run_garden(config, path, send_keys=False, show=False):
                 stopped.set()
 
         def on_release(key):
+            if cut_requested.is_set():
+                return
             if key == Key.f8:
                 if monitor is not None and monitor.state.is_latched():
                     acknowledge.set()
@@ -90,11 +126,18 @@ def run_garden(config, path, send_keys=False, show=False):
         else:
             print("当前全程步行；如需 F，运行 --measure-teleport 并确认 teleport_enabled=true。")
         print("F8 暂停/恢复；F10 保存测谎诊断；F12 退出。游戏须保持前台，预览不要遮住游戏。")
-        print("测谎监控：" + ("开启，沿用同一游戏窗口和原始 Beep 双音。" if monitor else "已由配置关闭。"))
+        print("测谎监控：" + ("检出标题后断网停机，不播放测谎报警音。" if cutnet else
+                              "开启，沿用同一游戏窗口和原始 Beep 双音。" if monitor else "已由配置关闭。"))
         last_log = alert_log = float("-inf")
         last_reason = ""
         while not stopped.is_set():
             started = time.monotonic()
+            if cutnet and monitor is not None:
+                # A hit after an earlier capture fault may reuse the existing alarm latch.
+                with monitor.state.lock:
+                    matched = monitor.state.reason == "检测到测谎窗口"
+                if matched:
+                    request_cut()
             preview_events()
             if stopped.is_set():
                 break
@@ -154,18 +197,24 @@ def run_garden(config, path, send_keys=False, show=False):
             time.sleep(max(.001, 1 / config.fps - (time.monotonic() - started)))
     finally:
         stopped.set()
-        if executor:
-            executor.stop()
-        if monitor:
-            monitor.stop()
-        if guard:
-            guard.join(timeout=.5)
-        if listener:
-            listener.stop()
-        window.close()
-        cv2.setNumThreads(original_threads)
-        if preview_open:
-            cv2.destroyAllWindows()
+        try:
+            if executor:
+                executor.stop()
+        finally:
+            try:
+                if cut_requested.is_set():
+                    network.disconnect()
+            finally:
+                if monitor:
+                    monitor.stop()
+                if guard:
+                    guard.join(timeout=.5)
+                if listener:
+                    listener.stop()
+                window.close()
+                cv2.setNumThreads(original_threads)
+                if preview_open:
+                    cv2.destroyAllWindows()
 
 
 def main(argv=None):
@@ -180,17 +229,34 @@ def main(argv=None):
                             ("sample", "补一张完整紫红食人花姿态，自动镜像"),
                             ("calibrate-alert", "采集测谎固定标题，已有模板可以复用"),
                             ("test-alert-sound", "只测试原始 Beep 报警，不操作游戏"),
+                            ("testcutnet", "真实测试本机断网：3 秒后禁用已连接物理网卡，不需要游戏"),
+                            ("restorenet", "手动启用上次断网记录中的网卡，不恢复挂机"),
                             ("observe", "只观察识别，不发送按键（默认）"),
                             ("run", "发送 D、方向键、水平 F 和定时 Alt")):
         actions.add_argument("--" + name, action="store_true", help=help_text)
     parser.add_argument("--show", action="store_true", help="显示缩小预览，须放在游戏旁边")
     parser.add_argument("--image", type=Path, help="只配合 --calibrate-alert 使用已保存原始截图")
+    parser.add_argument("--cutnet", action="store_true", help="仅配合 --run：命中测谎后松键、断网并退出，不播放测谎报警音")
     args = parser.parse_args(argv)
     if args.image and not args.calibrate_alert:
         parser.error("--image 只配合 --calibrate-alert")
+    if args.cutnet and not args.run:
+        parser.error("--cutnet 只能与 --run 一起使用；单独测试断网使用 --testcutnet")
     path = args.config.resolve()
     try:
-        if args.test_alert_sound:
+        if args.testcutnet or args.restorenet:
+            from .network_cut import NetworkSwitch
+
+            network = NetworkSwitch(path.parent / "debug-output/garden/network-cut.json")
+            if args.restorenet:
+                network.restore()
+            else:
+                targets = network.prepare()
+                print("断网测试会真实禁用：" + "、".join(item["name"] for item in targets), flush=True)
+                print("3 秒后执行，UU／远程连接也会断开；可 Ctrl+C 取消。需用本地键鼠／KVM 执行 --restorenet 恢复。", flush=True)
+                time.sleep(3)
+                network.disconnect()
+        elif args.test_alert_sound:
             from .lie_alert import beep_alert
 
             print("播放三次原始 Beep 双音；远程使用时在本机确认能否听到。")
@@ -210,7 +276,7 @@ def main(argv=None):
         else:
             config = load_garden(path)
             config.validate(ready=True)
-            run_garden(config, path, args.run, args.show)
+            run_garden(config, path, args.run, args.show, cutnet=args.cutnet)
         return 0
     except KeyboardInterrupt:
         return 0
