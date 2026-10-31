@@ -1,0 +1,19 @@
+# Connect to your existing MySQL; do not start the bundled mysql service.
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    init: true
+    shm_size: 256mb
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?在 .env 中配置已有 MySQL 的连接地址}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?先运行 python3 tools/init_env.py}
+      MODE: live
+      COLLECTOR_ENABLED: "true"
+      TZ: Asia/Shanghai
+    ports:
+      - "${BIND_IP:-0.0.0.0}:${PORT:-8080}:8000"
+    volumes:
+      - app-data:/app/data
+volumes:
+  app-data:

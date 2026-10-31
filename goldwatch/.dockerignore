@@ -1,0 +1,9 @@
+.git
+.env
+.venv
+data
+tests
+artifacts
+__pycache__
+*.pyc
+README.md

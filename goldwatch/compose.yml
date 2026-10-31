@@ -1,0 +1,40 @@
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: goldwatch
+      MYSQL_USER: goldwatch
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?先运行 python3 tools/init_env.py}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?先运行 python3 tools/init_env.py}
+      TZ: UTC
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+  web:
+    build: .
+    restart: unless-stopped
+    init: true
+    shm_size: 256mb
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql+pymysql://goldwatch:${MYSQL_PASSWORD}@mysql:3306/goldwatch?charset=utf8mb4
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?先运行 python3 tools/init_env.py}
+      MODE: live
+      COLLECTOR_ENABLED: "true"
+      TZ: Asia/Shanghai
+    ports:
+      - "${BIND_IP:-0.0.0.0}:${PORT:-8080}:8000"
+    volumes:
+      - app-data:/app/data
+volumes:
+  mysql-data:
+  app-data:
