@@ -50,6 +50,7 @@ class GardenConfig:
     lie_alert_interval: float = .25
     lie_alert_threshold: float = .90
     lie_alert_roi: tuple[int, int, int, int] | None = None
+    lie_alert_sound: str = "beep"
 
     def vision_config(self):
         return Config(behavior="stationary", monster_name="暗影食人花", auto_route=False,
@@ -65,6 +66,8 @@ class GardenConfig:
                       plant_color_fallback=False, stationary_fps=self.fps)
 
     def validate(self, ready=False):
+        if not isinstance(self.lie_alert_sound, str) or not self.lie_alert_sound.strip():
+            raise ValueError("lie_alert_sound 须为 beep、1、2、3 或 PCM WAV 文件路径")
         if not isinstance(self.window_title, str) or not self.window_title.strip():
             raise ValueError("window_title 不能为空")
         for name in ("left_x", "right_x", "floor_tolerance", "boundary_margin", "world_pixels_per_x",

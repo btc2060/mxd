@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import threading
 import time
 from pathlib import Path
@@ -24,6 +25,8 @@ def run_garden(config, path, send_keys=False, show=False, *, cutnet=False):
     if cutnet and (not send_keys or not config.lie_alert_enabled):
         raise ValueError("--cutnet 只用于 --run，且 lie_alert_enabled 必须为 true")
     detector = load_detector(config, path.parent) if config.lie_alert_enabled else None
+    from .garden_sound import prepare_alert_sound
+    selected_sound = prepare_alert_sound(config.lie_alert_sound, path.parent) if detector is not None and not cutnet else beep_alert
     network = None
     if cutnet:
         from .network_cut import NetworkSwitch
@@ -70,7 +73,7 @@ def run_garden(config, path, send_keys=False, show=False, *, cutnet=False):
             paused.set()
             if executor:
                 executor.stop()
-            print(f"警报：{reason}！已停键，持续 Beep 报警；F8 静音，手动处理完、窗口消失后再 F8 恢复。", flush=True)
+            print(f"警报：{reason}！已停键，持续报警；F8 静音，手动处理完、窗口消失后再 F8 恢复。", flush=True)
 
         def alarm_sound():
             # Do not emit even the first beep while the callback is being dispatched.
@@ -80,12 +83,12 @@ def run_garden(config, path, send_keys=False, show=False, *, cutnet=False):
                 with monitor.state.lock:
                     if monitor.state.reason == "检测到测谎窗口":
                         return
-            beep_alert()
+            selected_sound()
 
         if detector is not None:
             monitor = LieAlertMonitor(detector, config.frame_size,
                                       lambda: GameWindow(config.window_title, hwnd=window.hwnd), on_alarm,
-                                      config.lie_alert_interval, sound=alarm_sound if cutnet else beep_alert,
+                                      config.lie_alert_interval, sound=alarm_sound if cutnet else selected_sound,
                                       diagnostic_dir=path.parent / "debug-output" / "lie-alert")
         if send_keys:
             executor = InputExecutor(Keyboard(), config.vision_config(),
@@ -127,7 +130,7 @@ def run_garden(config, path, send_keys=False, show=False, *, cutnet=False):
             print("当前全程步行；如需 F，运行 --measure-teleport 并确认 teleport_enabled=true。")
         print("F8 暂停/恢复；F10 保存测谎诊断；F12 退出。游戏须保持前台，预览不要遮住游戏。")
         print("测谎监控：" + ("检出标题后断网停机，不播放测谎报警音。" if cutnet else
-                              "开启，沿用同一游戏窗口和原始 Beep 双音。" if monitor else "已由配置关闭。"))
+                              f"开启，沿用同一游戏窗口，报警声音={config.lie_alert_sound}。" if monitor else "已由配置关闭。"))
         last_log = alert_log = float("-inf")
         last_reason = ""
         while not stopped.is_set():
@@ -228,13 +231,14 @@ def main(argv=None):
                             ("anchor", "只点脚底，补当前地图地形参考"),
                             ("sample", "补一张完整紫红食人花姿态，自动镜像"),
                             ("calibrate-alert", "采集测谎固定标题，已有模板可以复用"),
-                            ("test-alert-sound", "只测试原始 Beep 报警，不操作游戏"),
+                            ("test-alert-sound", "测试所选报警声音，不操作游戏"),
                             ("testcutnet", "真实测试本机断网：3 秒后禁用已连接物理网卡，不需要游戏"),
                             ("restorenet", "手动启用上次断网记录中的网卡，不恢复挂机"),
                             ("observe", "只观察识别，不发送按键（默认）"),
                             ("run", "发送 D、方向键、水平 F 和定时 Alt")):
         actions.add_argument("--" + name, action="store_true", help=help_text)
     parser.add_argument("--show", action="store_true", help="显示缩小预览，须放在游戏旁边")
+    parser.add_argument("--alert-voice", choices=("1", "2", "3"), help="本次使用内置 1号／2号／3号语音，覆盖配置但不写回")
     parser.add_argument("--image", type=Path, help="只配合 --calibrate-alert 使用已保存原始截图")
     parser.add_argument("--cutnet", action="store_true", help="仅配合 --run：命中测谎后松键、断网并退出，不播放测谎报警音")
     args = parser.parse_args(argv)
@@ -257,11 +261,13 @@ def main(argv=None):
                 time.sleep(3)
                 network.disconnect()
         elif args.test_alert_sound:
-            from .lie_alert import beep_alert
+            from .garden_sound import prepare_alert_sound
 
-            print("播放三次原始 Beep 双音；远程使用时在本机确认能否听到。")
+            config = load_garden(path)
+            sound = prepare_alert_sound(args.alert_voice or config.lie_alert_sound, path.parent)
+            print("播放三次所选报警声音；远程使用时在本机确认能否听到。")
             for _ in range(3):
-                beep_alert()
+                sound()
                 time.sleep(.3)
         elif args.calibrate_alert:
             from .lie_alert import calibrate_alert
@@ -275,6 +281,8 @@ def main(argv=None):
             task(path)
         else:
             config = load_garden(path)
+            if args.alert_voice:
+                config = replace(config, lie_alert_sound=args.alert_voice)
             config.validate(ready=True)
             run_garden(config, path, args.run, args.show, cutnet=args.cutnet)
         return 0

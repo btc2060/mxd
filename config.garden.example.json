@@ -34,5 +34,6 @@
   "lie_alert_template": "calibration/lie-alert-title.png",
   "lie_alert_interval": 0.25,
   "lie_alert_threshold": 0.9,
-  "lie_alert_roi": null
+  "lie_alert_roi": null,
+  "lie_alert_sound": "beep"
 }
