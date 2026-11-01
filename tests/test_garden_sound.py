@@ -1,16 +1,41 @@
 import tempfile
 import io
 import wave
+from contextlib import redirect_stderr
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from lionbot.garden import main
-from lionbot.garden_sound import prepare_alert_sound
+from lionbot.garden_sound import prepare_alert_sound, voice_number
 
 
 class GardenSoundTests(unittest.TestCase):
+    def test_additional_numbers_use_corresponding_root_files(self):
+        source = (Path(__file__).parent.parent/'lionbot/sounds/1.wav').read_bytes()
+        with tempfile.TemporaryDirectory() as folder:
+            sounds=Path(folder)/'sounds';sounds.mkdir()
+            winsound=SimpleNamespace(PlaySound=Mock(),SND_FILENAME=0x20000,SND_MEMORY=4,SND_NODEFAULT=2)
+            with patch.dict('sys.modules',winsound=winsound):
+                for number in ('4','10','23'):
+                    path=sounds/f'{number}.wav';path.write_bytes(source)
+                    prepare_alert_sound(number,Path(folder))()
+                    self.assertEqual(Path(winsound.PlaySound.call_args.args[0]),path)
+            with self.assertRaisesRegex(ValueError,'24.wav'):
+                prepare_alert_sound('24',Path(folder))
+
+    def test_cli_accepts_additional_numbers_and_rejects_invalid_values(self):
+        with tempfile.TemporaryDirectory() as folder, patch('lionbot.garden_sound.prepare_alert_sound',return_value=Mock()) as prepare, patch('lionbot.garden.time.sleep'):
+            for number in ('4','10','23'):
+                self.assertEqual(main(['--config',str(Path(folder)/'config.garden.local.json'),'--test-alert-sound','--alert-voice',number]),0)
+                self.assertEqual(prepare.call_args.args[0],number)
+            for number in ('0','-1','1.5','abc'):
+                with self.assertRaises(SystemExit) as exc, redirect_stderr(io.StringIO()):
+                    main(['--test-alert-sound','--alert-voice',number])
+                self.assertEqual(exc.exception.code,2)
+        self.assertEqual(voice_number('004'),'4')
+
     def test_streaming_unknown_sizes_and_40000hz_are_normalized_in_memory(self):
         stream = io.BytesIO()
         with wave.open(stream, 'wb') as wav:

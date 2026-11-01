@@ -67,7 +67,7 @@ class GardenConfig:
 
     def validate(self, ready=False):
         if not isinstance(self.lie_alert_sound, str) or not self.lie_alert_sound.strip():
-            raise ValueError("lie_alert_sound 须为 beep、1、2、3 或 PCM WAV 文件路径")
+            raise ValueError("lie_alert_sound 须为 beep、正整数编号字符串或 PCM WAV 文件路径")
         if not isinstance(self.window_title, str) or not self.window_title.strip():
             raise ValueError("window_title 不能为空")
         for name in ("left_x", "right_x", "floor_tolerance", "boundary_margin", "world_pixels_per_x",

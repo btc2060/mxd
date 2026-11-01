@@ -4,6 +4,12 @@ from pathlib import Path
 import wave
 
 
+def voice_number(value):
+    if not isinstance(value, str) or not value.isascii() or not value.isdecimal() or int(value) < 1:
+        raise ValueError("报警声音编号必须是正整数")
+    return str(int(value))
+
+
 def _unknown_data_size(data):
     offset = 12
     while offset + 8 <= len(data):
@@ -20,10 +26,14 @@ def prepare_alert_sound(selection="beep", root=Path(".")):
     if selection == "beep":
         return beep_alert
     root = Path(root).resolve()
-    if selection in ("1", "2", "3"):
+    if selection.isascii() and selection.isdecimal():
+        selection = voice_number(selection)
         candidates = (root / "sounds" / f"{selection}.wav", root / "lionbot" / "sounds" / f"{selection}.wav",
                       Path(__file__).parent / "sounds" / f"{selection}.wav")
-        path = next((candidate for candidate in candidates if candidate.is_file()), candidates[0]).resolve()
+        path = next((candidate for candidate in candidates if candidate.is_file()), None)
+        if path is None:
+            raise ValueError(f"未找到编号 {selection} 的报警声音，请添加文件：{candidates[0]}")
+        path = path.resolve()
     else:
         path = (root / selection).resolve()
     try:

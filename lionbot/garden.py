@@ -12,6 +12,7 @@ import cv2
 from .controls import InputCancelled, InputExecutor
 from .garden_cycle import GardenCycle, load_garden, save_garden
 from .garden_vision import GardenVision
+from .garden_sound import voice_number
 
 
 def run_garden(config, path, send_keys=False, show=False, *, cutnet=False):
@@ -238,7 +239,7 @@ def main(argv=None):
                             ("run", "发送 D、方向键、水平 F 和定时 Alt")):
         actions.add_argument("--" + name, action="store_true", help=help_text)
     parser.add_argument("--show", action="store_true", help="显示缩小预览，须放在游戏旁边")
-    parser.add_argument("--alert-voice", choices=("1", "2", "3"), help="本次使用内置 1号／2号／3号语音，覆盖配置但不写回")
+    parser.add_argument("--alert-voice", type=voice_number, metavar="编号", help="正整数编号，如 1、4、15，对应 sounds/编号.wav；覆盖配置但不写回")
     parser.add_argument("--image", type=Path, help="只配合 --calibrate-alert 使用已保存原始截图")
     parser.add_argument("--cutnet", action="store_true", help="仅配合 --run：命中测谎后松键、断网并退出，不播放测谎报警音")
     args = parser.parse_args(argv)
