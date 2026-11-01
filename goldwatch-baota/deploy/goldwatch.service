@@ -1,0 +1,18 @@
+[Unit]
+Description=Maple GoldWatch native Python monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www
+Group=www
+WorkingDirectory=/www/apps/maple-goldwatch-python
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/www/apps/maple-goldwatch-python/.venv/bin/python run.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=25
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+.env
+.venv/
+.browsers/
+data/
+artifacts/
+backups/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.log
