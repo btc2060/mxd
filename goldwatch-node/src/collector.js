@@ -1,7 +1,7 @@
 import robotsParser from 'robots-parser';
-import { chromium } from 'playwright-core';
 import { parseHtml } from './parser.js';
 import { EnvHttpProxyAgent, fetch as proxyFetch } from 'undici';
+import { browserLaunchOptions, launchBrowser, errorDetails } from './browser.js';
 
 export const USER_AGENT = 'MapleGoldWatch/1.0 (public game-currency quote monitor)';
 export class CollectionError extends Error {
@@ -10,8 +10,9 @@ export class CollectionError extends Error {
 const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 export class Collector {
-  constructor(config, request = null) {
+  constructor(config, request = null, browserLauncher = launchBrowser) {
     this.config = config; this.robots = null;
+    this.browserLauncher = browserLauncher;
     this.agent = !request && (process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy)
       ? new EnvHttpProxyAgent() : null;
     this.request = request || ((url, options) => proxyFetch(url, { ...options, ...(this.agent ? { dispatcher: this.agent } : {}) }));
@@ -21,7 +22,7 @@ export class Collector {
     let response;
     try { response = await this.request(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(25000)]), redirect: 'manual',
       headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'zh-CN,zh;q=0.9' } }); }
-    catch (error) { throw new CollectionError(`来源网络请求未完成：${error.name}`); }
+    catch (error) { throw new CollectionError(`来源网络请求未完成：${errorDetails(error, this.config)}`); }
     return response;
   }
   async robotCheck(signal) {
@@ -86,30 +87,32 @@ export class Collector {
     return { quotes, pages, engine, warnings: [...new Set(warnings)] };
   }
   async browser(urls, options, signal, delay) {
-    let browser;
+    let browser, stage = '启动 Chromium';
     const stop = () => { browser?.close().catch(() => {}); };
     try {
       signal.throwIfAborted();
-      const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy;
-      const proxy = proxyUrl ? new URL(proxyUrl) : null;
-      browser = await chromium.launch({ headless: true, executablePath: this.config.chromium, args: ['--disable-dev-shm-usage'],
-        ...(proxy ? { proxy: { server: `${proxy.protocol}//${proxy.host}`, ...(proxy.username ? {
-          username: decodeURIComponent(proxy.username), password: decodeURIComponent(proxy.password) } : {}) } } : {}) });
+      browser = await this.browserLauncher(browserLaunchOptions(this.config));
       signal.addEventListener('abort', stop, { once: true });
       signal.throwIfAborted();
+      stage = '创建浏览器页面';
       const context = await browser.newContext({ locale: 'zh-CN', viewport: { width: 1440, height: 1000 } });
       await context.route('**/*', route => ['image', 'media', 'font'].includes(route.request().resourceType()) ? route.abort() : route.continue());
       const page = await context.newPage(); const quotes = [], warnings = []; let pages = 0;
       for (const url of urls) {
         if (pages) await pause(delay * 1000);
         signal.throwIfAborted();
+        stage = '访问报价页';
         const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 35000 });
         if ([401, 403, 429].includes(response?.status())) throw new CollectionError(`浏览器访问返回 HTTP ${response.status()}`, { blocked: true });
         if (new URL(page.url()).hostname !== 'search.7881.com') throw new CollectionError('页面跳转到其他站点或登录页，已停止', { blocked: true });
+        stage = '等待报价页面并解析';
         await page.getByText(/立即购买|立即出售/).first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
         await page.waitForTimeout(1500);
         for (const frame of page.frames().slice(0, 6)) {
-          const host = new URL(frame.url()).hostname;
+          let frameUrl;
+          try { frameUrl = new URL(frame.url()); } catch { continue; }
+          if (!['http:', 'https:'].includes(frameUrl.protocol)) continue;
+          const host = frameUrl.hostname;
           if (frame !== page.mainFrame() && host !== '7881.com' && !host.endsWith('.7881.com')) continue;
           await frame.evaluate(() => { for (const element of document.querySelectorAll('body *')) {
             const style = getComputedStyle(element); if (style.display === 'none' || style.visibility === 'hidden') element.setAttribute('data-gw-hidden', 'true');
@@ -124,7 +127,7 @@ export class Collector {
       return { quotes, pages, warnings };
     } catch (error) {
       if (error instanceof CollectionError) throw error;
-      throw new CollectionError(`Chromium 采集失败：${error.name}，请检查 CHROMIUM_PATH 和系统浏览器依赖`);
+      throw new CollectionError(`Chromium 采集失败（${stage}）：${errorDetails(error, this.config)}`);
     } finally { signal.removeEventListener('abort', stop); await browser?.close().catch(() => {}); }
   }
 }

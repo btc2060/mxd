@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { parseHtml, extractRate, safeUrl } from '../src/parser.js';
 import { loadConfig, SOURCE_URL } from '../src/config.js';
 import { aggregate, bucketStart } from '../src/analytics.js';
 import { iso } from '../src/db.js';
 import { Collector } from '../src/collector.js';
+import { errorDetails, browserLaunchOptions } from '../src/browser.js';
 
 const html = readFileSync(new URL('./quotes.html', import.meta.url), 'utf8');
 const options = { max_pages: 1, engine: 'auto', merchant_selector: '', player_selector: '' };
@@ -95,4 +98,34 @@ test('跨页相同明细和重复商家栏不会双计数', async () => {
   const collector = new Collector(config, mock(url => url.pathname === '/robots.txt' ? new Response('', { status: 404 }) : new Response(html)));
   const data = await collector.collect({ ...options, max_pages: 2 });
   assert.equal(data.pages, 2); assert.equal(data.quotes.length, 7);
+});
+test('Chromium 错误保留 stderr 和嵌套原因，同时隐藏凭据', () => {
+  const error = new Error('browserType.launch: closed\n<launching> /chrome --many-arguments\n[pid][err] chrome_crashpad_handler: --database is required\nhttp://proxy-user:proxy-password@proxy:8080 db-secret token-secret',
+    { cause: Object.assign(new Error('lookup failed'), { code: 'ENOTFOUND' }) });
+  const detail = errorDetails(error, { mysql: { password: 'db-secret' }, adminToken: 'token-secret' }, { HTTPS_PROXY: 'http://proxy-user:proxy-password@proxy:8080' });
+  assert.match(detail, /chrome_crashpad_handler/); assert.match(detail, /ENOTFOUND/);
+  for (const secret of ['proxy-password', 'db-secret', 'token-secret']) assert.ok(!detail.includes(secret));
+  assert.ok(!detail.includes('<launching>'));
+});
+test('浏览器错误标明失败阶段，网络错误保留 DNS 原因', async () => {
+  const collector = new Collector({ ...config, chromium: '/test/chrome' }, mock(() => new Response('User-agent: *\nAllow: /')),
+    async () => { throw new Error('EACCES: permission denied /test/chrome'); });
+  await assert.rejects(collector.collect({ ...options, engine: 'browser' }), error => error.message.includes('启动 Chromium') && error.message.includes('EACCES'));
+  const network = new Collector(config, async () => { throw new Error('fetch failed', { cause: Object.assign(new Error('lookup failed'), { code: 'ENOTFOUND' }) }); });
+  await assert.rejects(network.collect(options), /ENOTFOUND/);
+});
+test('优先使用项目浏览器，显式路径仍有最高优先级', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'goldwatch-browser-config-'));
+  try {
+    const browser = path.join(directory, 'chromium-1234', 'chrome-linux64', 'chrome');
+    mkdirSync(path.dirname(browser), { recursive: true }); writeFileSync(browser, 'test');
+    const env = { MYSQL_PASSWORD: 'test-only', PLAYWRIGHT_BROWSERS_PATH: directory };
+    assert.equal(loadConfig(env).chromium, browser);
+    assert.equal(loadConfig({ ...env, CHROMIUM_PATH: '/explicit/chrome' }).chromium, '/explicit/chrome');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+test('采集器和诊断器共享启动参数，代理认证不放进 server URL', () => {
+  const settings = browserLaunchOptions({ chromium: '/test/chrome' }, { HTTPS_PROXY: 'http://user:secret%40pass@proxy:8080' });
+  assert.equal(settings.executablePath, '/test/chrome'); assert.equal(settings.timeout, 30000);
+  assert.equal(settings.proxy.server, 'http://proxy:8080'); assert.equal(settings.proxy.password, 'secret@pass');
 });

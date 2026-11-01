@@ -8,7 +8,7 @@
 
 监控来源：<https://search.7881.com/G6344-100001-G6344P002-G6344P002005-0.html?pageNum=1>
 
-**当前验证范围：** 已通过本机 Node 24、临时 MySQL 8.4、真实 Chromium 的接口及网页测试。但开发环境的出站白名单不含 7881，未完成源站实时 HTML 核验。解析测试使用用户截图对应的 2 条商家和 5 条玩家报价构建的测试页。你的服务器首次部署后，需要确认两种价格均采集成功、明细与原站对应；动态结构或选择器仍可能需要适配。
+**当前验证范围：** 已通过本机 Node 24、临时 MySQL 8.4、真实 Chromium 的接口及网页测试。1.0.1 增加分阶段错误详情、只读浏览器诊断、项目浏览器优先选择及空白 iframe 处理，已有 19 项核心测试和拦截页面的真实浏览器检查。但开发环境的出站白名单不含 7881，未完成源站实时 HTML 核验。解析测试使用用户截图对应的 2 条商家和 5 条玩家报价构建的测试页。你的服务器首次部署后，需要确认两种价格均采集成功、明细与原站对应；动态结构或选择器仍可能需要适配。
 
 ## 宝塔部署流程
 
@@ -138,6 +138,8 @@ http://127.0.0.1:8080
 
 代理整个 `/`，不要只代理 `/api/`。如果 Node 项目自带“域名映射”可直接使用，不要再创建重复的同名站点。申请 SSL 证书并开启 HTTPS，外网只需放行 80、443；默认无需开放应用的 8080。
 
+**区分两个端口：** 宝塔“Node 项目端口”和 `.env` 的 `PORT` 是 `8080`；HTTP 站点的 Nginx 配置应是 `listen 80;`，同时 `proxy_pass http://127.0.0.1:8080;`。Nginx 再监听 8080 会与 Node 冲突。若 Node 本地健康检查为 200，而 Nginx 的 80 端口为 404，先核对该站点的 `listen`、`server_name` 和配置是否加载。
+
 浏览器访问域名后，进入“采集设置”，输入 `.env` 中的 `ADMIN_TOKEN`。只读看板无需口令，修改频率、立即采集、HTML 导入需要口令。
 
 只有服务器 IP、暂时没有域名时，可短期将 `.env` 中 `HOST` 改成 `0.0.0.0`，重启项目，并在宝塔防火墙、阿里云安全组放行 8080，然后访问 `http://服务器IP:8080`。公网长期使用建议完成 HTTPS 反向代理，再改回 `127.0.0.1`。
@@ -149,16 +151,37 @@ http://127.0.0.1:8080
 先在项目目录安装浏览器及 Ubuntu 系统依赖：
 
 ```bash
+export PATH="/www/server/nodejs/v24.13.1/bin:$PATH"
+hash -r
 cd /www/apps/maple-goldwatch-node
-PLAYWRIGHT_BROWSERS_PATH=/www/apps/maple-goldwatch-node/.browsers npx playwright-core install --with-deps chromium
+PLAYWRIGHT_BROWSERS_PATH=/www/apps/maple-goldwatch-node/.browsers node node_modules/playwright-core/cli.js install --with-deps --no-shell chromium
 chown -R www:www /www/apps/maple-goldwatch-node/.browsers
 ```
 
 安装系统依赖需要 root 权限，可使用宝塔的 root 终端。浏览器存放在项目的 `.browsers` 目录，避免安装到 root 私有缓存后 `www` 无法读取。保持 `.env` 中 `PLAYWRIGHT_BROWSERS_PATH=.browsers`，`CHROMIUM_PATH` 留空，程序自动寻找浏览器，然后在面板重启项目。
 
+请先确认已进入项目目录，直接运行项目内的 CLI，使用锁文件对应的 Playwright 版本。在 `~` 目录使用 `npx` 可能临时下载另一个版本；安装输出只有“系统依赖已是最新”不能证明运行用户能启动浏览器。1.0.1 在没有显式 `CHROMIUM_PATH` 时优先选择项目 `.browsers` 中的浏览器，再检查系统路径。
+
 Ubuntu 24 的 `apt install chromium-browser` 可能引入 Snap，不作为此部署流程。若系统已有可执行的 Chrome/Chromium，可直接在 `.env` 设置 `CHROMIUM_PATH=/实际路径/chrome`。`CHROMIUM_PATH` 显式指定时优先使用它。
 
 如果下载浏览器仍受网络影响，可以先运行网页和 HTML 采集；缺少浏览器时不会伪造缺失区域。不要关闭证书校验或把随机第三方镜像当成必需配置。
+
+安装后以与宝塔项目相同的用户检查，不连接 MySQL、不写入报价：
+
+```bash
+cd /www/apps/maple-goldwatch-node
+runuser -u www -- /www/server/nodejs/v24.13.1/bin/node scripts/doctor.js
+```
+
+输出会列出 Node／Playwright 版本、进程 UID、选中的浏览器路径，接着启动 Chromium 并渲染本地测试页。`本地浏览器测试：PASS` 只表示浏览器可运行，不代表源站已采集成功。
+
+继续检查源站第一页公开报价：
+
+```bash
+runuser -u www -- /www/server/nodejs/v24.13.1/bin/node scripts/doctor.js --source
+```
+
+此诊断读取 robots、尝试公开 HTML 和正常浏览器渲染，不写数据库、不会修改频率。使用默认自动识别和第一页，不读取数据库里的自定义选择器。具体阶段和底层错误会打印在终端，并隐藏管理员、数据库及代理凭据。若本地 PASS、源站失败，应按 DNS、TLS、超时、验证页面或解析结果继续处理，不能反复重装浏览器或把测试页当成真实采集结果。
 
 ### 9. 首次验收
 
@@ -226,9 +249,12 @@ npm run collect
 ```bash
 npm ci
 npm test
+npm run smoke:browser
 ```
 
 测试覆盖截图报价、两市场隔离、Decimal 倒数、卡片范围、链接、编码、参数验证、时间和 K 线、缺测留空、robots／429、分页去重、动态区域缺失。
+
+`smoke:browser` 使用本机可用 Chromium，所有页面请求在浏览器内拦截为本地测试 HTML 或模拟 DNS 失败，不访问 7881 或 MySQL；也验证只读诊断命令和空白 iframe 的处理。
 
 可选 `npm run smoke` 使用本机 Docker 中的 `mysql:8.4` 做**开发测试**，并使用 `CHROMIUM_PATH` 或 `/usr/bin/chromium` 做浏览器检查；生产部署不需要 Docker。该脚本使用随机端口、随机凭据、临时库，跳过项目 `.env`，完成后删除测试容器和匿名卷，不接触已有数据库或 7881。覆盖 API、认证、设置、重启持久化、采集锁、失败保留、桌面和手机页面。
 

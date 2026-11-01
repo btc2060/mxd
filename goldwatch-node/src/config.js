@@ -36,7 +36,7 @@ export function loadConfig(environment = process.env) {
   const downloaded = existsSync(browserRoot) ? readdirSync(browserRoot).filter(name => /^chromium-\d+$/.test(name))
     .sort((a, b) => Number(b.split('-')[1]) - Number(a.split('-')[1]))
     .flatMap(name => [path.join(browserRoot, name, 'chrome-linux64/chrome'), path.join(browserRoot, name, 'chrome-linux/chrome')]) : [];
-  const chromium = environment.CHROMIUM_PATH || ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', ...downloaded].find(existsSync) || '';
+  const chromium = environment.CHROMIUM_PATH || [...downloaded, '/usr/bin/chromium', '/usr/bin/google-chrome', '/usr/bin/chromium-browser'].find(existsSync) || '';
   return { host: environment.HOST || '127.0.0.1', port, mode, mysql, adminToken, sourceUrl: source.href,
     workerEnabled: environment.COLLECTOR_ENABLED !== 'false', chromium,
     marketName: environment.MARKET_NAME || '冒险岛怀旧服 · 国服/小白兔' };
