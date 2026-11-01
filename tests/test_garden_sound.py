@@ -1,4 +1,6 @@
 import tempfile
+import io
+import wave
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +11,34 @@ from lionbot.garden_sound import prepare_alert_sound
 
 
 class GardenSoundTests(unittest.TestCase):
+    def test_streaming_unknown_sizes_and_40000hz_are_normalized_in_memory(self):
+        stream = io.BytesIO()
+        with wave.open(stream, 'wb') as wav:
+            wav.setnchannels(2); wav.setsampwidth(2); wav.setframerate(40000)
+            wav.writeframes(b'\x01\x00\x02\x00' * 32000)
+        original = bytearray(stream.getvalue())
+        original[4:8] = b'\xff' * 4
+        original[40:44] = b'\xff' * 4
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'sound.wav'; path.write_bytes(original)
+            winsound = SimpleNamespace(PlaySound=Mock(), SND_FILENAME=0x20000, SND_MEMORY=4, SND_NODEFAULT=2)
+            with patch.dict('sys.modules', winsound=winsound):
+                prepare_alert_sound('sound.wav', Path(folder))()
+            data, flags = winsound.PlaySound.call_args.args
+            self.assertIsInstance(data, bytes); self.assertEqual(flags, 6)
+            with wave.open(io.BytesIO(data)) as wav:
+                self.assertEqual(wav.getframerate(), 44100)
+                self.assertEqual(wav.getnframes(), 35280)
+                self.assertEqual(len(wav.readframes(wav.getnframes())),35280*4)
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_genuinely_truncated_finite_wav_is_rejected(self):
+        data = (Path(__file__).parent.parent/'lionbot/sounds/1.wav').read_bytes()
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'sound.wav';path.write_bytes(data[:-20])
+            with self.assertRaisesRegex(ValueError,'数据不完整'):
+                prepare_alert_sound('sound.wav', Path(folder))
+
     def test_all_three_builtin_waves_use_native_file_playback(self):
         winsound = SimpleNamespace(PlaySound=Mock(), SND_FILENAME=0x20000, SND_MEMORY=4, SND_NODEFAULT=2)
         with patch.dict('sys.modules', winsound=winsound):
