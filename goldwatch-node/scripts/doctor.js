@@ -15,7 +15,7 @@ try {
   console.log(`项目目录：${ROOT}`);
   console.log(`进程 UID：${process.getuid?.() ?? 'Windows'}；浏览器：${config.chromium || '未找到'}`);
   stage = '检查浏览器执行权限';
-  if (!config.chromium) throw new Error('未找到浏览器。请先 cd 到项目目录，再执行 node node_modules/playwright-core/cli.js install --with-deps --no-shell chromium');
+  if (!config.chromium) throw new Error('未找到浏览器。请先 cd 到项目目录，再执行 PLAYWRIGHT_BROWSERS_PATH=.browsers node node_modules/playwright-core/cli.js install --with-deps --no-shell chromium');
   await access(config.chromium, constants.X_OK);
   stage = '启动 Chromium';
   browser = await launchBrowser(browserLaunchOptions(config));
