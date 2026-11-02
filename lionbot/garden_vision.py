@@ -122,3 +122,20 @@ class GardenVision(Vision):
             self.mapper.seed(frame, tuple(anchor["position"]), tuple(anchor["feet"]))
         if not self.mapper.references:
             raise ValueError("缺少当前地图的脚底/地形参考，请运行 python -m lionbot.garden --anchor")
+        # Manual feet anchors are absolute references. Do not integrate incremental
+        # camera errors or reseed these anchors from an inherited nameplate offset.
+        self.fixed_references=tuple(self.mapper.references)
+
+    def locate_stationary(self,frame,position,now):
+        feet=self.mapper.locate(frame,position,[d.box for d in self.detections],fixed_references=self.fixed_references)
+        return feet,'terrain' if feet is not None else 'unmapped'
+
+    def draw(self,frame,obs,status,direction=''):
+        output=super().draw(frame,obs,status,direction)
+        if obs.player_feet:
+            x,y=map(int,obs.player_feet)
+            cv2.line(output,(x-10,y),(x+10,y),(0,255,255),2)
+            cv2.line(output,(x,y-10),(x,y+10),(0,255,255),2)
+            cv2.putText(output,f'CENTER=({x},{y}) L={self.c.attack_reach_px:.0f}px R={self.c.attack_reach_px:.0f}px [{obs.location_source}]',
+                        (12,38),0,.5,(0,255,255),1,cv2.LINE_AA)
+        return output

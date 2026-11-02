@@ -10,7 +10,7 @@ import numpy as np
 
 from .brain import Action, Observation, target_status
 from .config import Config, Floor
-from .timed_keys import TimedKeys, default_timed_keys, validate_timed_keys
+from .timed_keys import TimedKeys, default_timed_keys, validate_timed_keys, normalize_timed_keys
 
 
 @dataclass(frozen=True)
@@ -151,7 +151,7 @@ def load_garden(path):
             raw[name] = tuple(raw[name])
     if "bottom_path" in raw:
         raw["bottom_path"] = tuple(tuple(point) for point in raw["bottom_path"])
-    if "timed_keys" in raw:raw["timed_keys"]=tuple(raw["timed_keys"])
+    if "timed_keys" in raw:raw["timed_keys"]=normalize_timed_keys(raw["timed_keys"])
     config = replace(base, **raw)
     config.validate()
     return config
@@ -375,11 +375,11 @@ class GardenCycle:
             self.next_alt = pressed_at + self.c.alt_interval
             self.busy_until = pressed_at + .15
         elif action.kind == "timed_key":
-            hold=self.timed_keys.executed(action.direction,pressed_at)
-            self.busy_until=pressed_at+hold+.05
+            duration=self.timed_keys.executed(action.direction,pressed_at)
+            self.busy_until=pressed_at+duration
             self.facing=""
             # Exclude the planned tap duration without erasing a real stationary history.
-            if self.stationary_at is not None:self.stationary_at+=hold+.05
+            if self.stationary_at is not None:self.stationary_at+=duration
         elif action.kind == "teleport":
             self.facing = action.direction
             self.teleport_origin = obs.position[0]

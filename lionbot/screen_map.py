@@ -123,17 +123,19 @@ class ScreenMapper:
             return None
         return np.median(after[good] - before[good], axis=0)
 
-    def locate(self, frame: np.ndarray, position, excluded_boxes=()):
-        if not self.references:
+    def locate(self, frame: np.ndarray, position, excluded_boxes=(), *, fixed_references=None):
+        pool=self.references if fixed_references is None else fixed_references
+        if not pool:
             return None
         points, descriptors = self.features(frame, excluded_boxes)
         if descriptors is None or len(points) < 12:
             return None
         sx = self.c.world_pixels_per_x
         sy = sx * self.c.minimap_roi[3] / self.c.minimap_roi[2]
-        nearest = sorted(self.references, key=lambda r: np.hypot(
+        nearest = sorted(pool, key=lambda r: np.hypot(
             (r.position[0] - position[0]) * sx, (r.position[1] - position[1]) * sy))[:3]
-        references = ([self.last] if self.last is not None else []) + nearest
+        references = (([self.last] if self.last is not None else []) + nearest
+                      if fixed_references is None else nearest)
         for reference in references:
             shift = self.translation(reference, points, descriptors)
             if shift is None:
@@ -141,7 +143,7 @@ class ScreenMapper:
             feet = (reference.feet[0] + (position[0] - reference.position[0]) * sx + float(shift[0]),
                     reference.feet[1] + (position[1] - reference.position[1]) * sy + float(shift[1]))
             if 0 <= feet[0] < frame.shape[1] and 0 <= feet[1] < frame.shape[0]:
-                self.remember(ScreenReference(position, feet, points, descriptors))
+                if fixed_references is None:self.remember(ScreenReference(position, feet, points, descriptors))
                 return feet
         return None
 

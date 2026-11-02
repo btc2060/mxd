@@ -197,6 +197,8 @@ def run_garden(config, path, send_keys=False, show=False, *, cutnet=False):
             if executor:
                 try:
                     brain.executed(action, executor.execute(action), obs)
+                    if action.kind=='timed_key':
+                        print(f'已发送定时按键：{action.direction}；等待技能后摇后继续巡逻。',flush=True)
                     if action.kind == "teleport":
                         vision.reset()  # 不把瞬移前的检测当成落点处的当前怪物。
                 except InputCancelled:

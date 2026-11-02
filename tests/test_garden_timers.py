@@ -6,7 +6,9 @@ import unittest
 from lionbot.brain import Action
 from lionbot.controls import InputCancelled
 from lionbot.garden_cycle import GardenCycle,load_garden,save_garden
-from lionbot.timed_keys import TimedKeys,TimedInputExecutor
+from lionbot.timed_keys import TimedKeys,TimedInputExecutor,bind_timed_special_keys
+from types import SimpleNamespace
+from unittest.mock import Mock,call
 from tests.test_garden import config,observation
 from tests.test_controls import Clock,Keyboard
 
@@ -73,6 +75,31 @@ class GardenTimerTests(unittest.TestCase):
         brain=GardenCycle(config(timed_keys=slots()),start_alt=False)
         brain.decide(observation(),0)
         brain.executed(Action('timed_key','2'),4,observation())
-        self.assertAlmostEqual(brain.stationary_at,.15)
+        self.assertAlmostEqual(brain.stationary_at,.9)
         self.assertEqual(brain.recover_position(.5,6).kind,'walk')
         self.assertTrue(brain.recovering)
+
+    def test_letters_and_uppercase_function_keys_reach_keyboard_backend(self):
+        from lionbot.windows import Keyboard as RealKeyboard
+        values=({'key':' F ','interval_seconds':10,'hold_seconds':.1},
+                {'key':'H','interval_seconds':20,'hold_seconds':.1},
+                {'key':'F1','interval_seconds':30,'hold_seconds':.1},
+                {'key':'a','interval_seconds':0,'hold_seconds':.1})
+        c=config(timed_keys=values);c.validate()
+        keyboard=object.__new__(RealKeyboard);keyboard.controller=Mock();keyboard.special={}
+        key_f1=object();bind_timed_special_keys(keyboard,SimpleNamespace(f1=key_f1),values)
+        timer=TimedKeys(values);timer.action(0)
+        clock=Clock();clock.now=30
+        executor=TimedInputExecutor(keyboard,c.vision_config(),timed_keys=values,clock=clock.time,sleep=clock.sleep)
+        for key in ('f','h','f1'):
+            action=timer.action(30);self.assertEqual(action.direction,key)
+            timer.executed(key,executor.execute(action))
+        self.assertEqual(keyboard.controller.press.call_args_list,[call('f'),call('h'),call(key_f1)])
+        self.assertFalse(executor.held)
+
+    def test_timed_skill_settle_blocks_attack_until_animation_finishes(self):
+        brain=GardenCycle(config(timed_keys=slots(),stationary_timeout_seconds=100),start_alt=False)
+        brain.decide(observation(),0)
+        action=brain.decide(observation(),20);brain.executed(action,20,observation())
+        self.assertAlmostEqual(brain.busy_until,20.9)
+        self.assertEqual(brain.decide(observation(),20.5).kind,'wait')
