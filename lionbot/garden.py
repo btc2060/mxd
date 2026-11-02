@@ -9,7 +9,8 @@ from pathlib import Path
 
 import cv2
 
-from .controls import InputCancelled, InputExecutor
+from .controls import InputCancelled
+from .timed_keys import TimedInputExecutor as InputExecutor, bind_timed_special_keys
 from .garden_cycle import GardenCycle, load_garden, save_garden
 from .garden_vision import GardenVision
 from .garden_sound import voice_number
@@ -92,7 +93,9 @@ def run_garden(config, path, send_keys=False, show=False, *, cutnet=False):
                                       config.lie_alert_interval, sound=alarm_sound if cutnet else selected_sound,
                                       diagnostic_dir=path.parent / "debug-output" / "lie-alert")
         if send_keys:
-            executor = InputExecutor(Keyboard(), config.vision_config(),
+            keyboard=Keyboard()
+            bind_timed_special_keys(keyboard,Key,config.timed_keys)
+            executor = InputExecutor(keyboard, config.vision_config(),timed_keys=config.timed_keys,
                                      active=lambda: window.focused() and not paused.is_set() and not stopped.is_set()
                                      and (monitor is None or monitor.state.allows_input()))
             guard = executor.start_guard(stopped)
@@ -122,7 +125,8 @@ def run_garden(config, path, send_keys=False, show=False, *, cutnet=False):
         print(f"附近两侧清完后继续原路线；像素射程 {config.attack_range_px:.0f}px，高度为脚底到头顶 "
               f"{config.player_height_px:.0f}px；局部模板＋紫红花头/绿叶识别，{config.fps:g}fps。")
         print(f"黄点原地停留超过 {config.stationary_timeout_seconds:g}s 就中断清怪、连续步行脱离，再恢复巡逻；暂停不累计。")
-        print(f"挂机开始 Alt 一次，此后每 {config.alt_interval:g}s 一次；没有 A、跳跃、爬绳或上层路线。")
+        print(f"挂机开始 Alt 一次，此后每 {config.alt_interval:g}s 一次；清怪仍用 D，没有自动切换 A 或爬绳、上层路线。")
+        print(f"新增4组定时键：{config.timed_keys}；间隔0关闭，按实际发送时间计时。")
         if config.teleport_enabled and config.teleport_max_dx is not None:
             print(f"中段方向键＋F，冷却 {config.teleport_cooldown:g}s；边缘只步行，瞬移后等待落点重新识别。")
             if config.teleport_max_dx * config.world_pixels_per_x > 1.8 * config.attack_range_px:

@@ -35,5 +35,27 @@
   "lie_alert_interval": 0.25,
   "lie_alert_threshold": 0.9,
   "lie_alert_roi": null,
-  "lie_alert_sound": "beep"
+  "lie_alert_sound": "beep",
+  "timed_keys": [
+    {
+      "key": "1",
+      "interval_seconds": 0.0,
+      "hold_seconds": 0.1
+    },
+    {
+      "key": "2",
+      "interval_seconds": 0.0,
+      "hold_seconds": 0.1
+    },
+    {
+      "key": "3",
+      "interval_seconds": 0.0,
+      "hold_seconds": 0.1
+    },
+    {
+      "key": "4",
+      "interval_seconds": 0.0,
+      "hold_seconds": 0.1
+    }
+  ]
 }

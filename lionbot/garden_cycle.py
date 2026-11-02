@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
 
 from .brain import Action, Observation, target_status
 from .config import Config, Floor
+from .timed_keys import TimedKeys, default_timed_keys, validate_timed_keys
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ class GardenConfig:
     lie_alert_threshold: float = .90
     lie_alert_roi: tuple[int, int, int, int] | None = None
     lie_alert_sound: str = "beep"
+    timed_keys: tuple = field(default_factory=default_timed_keys)
 
     def vision_config(self):
         return Config(behavior="stationary", monster_name="暗影食人花", auto_route=False,
@@ -66,6 +68,7 @@ class GardenConfig:
                       plant_color_fallback=False, stationary_fps=self.fps)
 
     def validate(self, ready=False):
+        validate_timed_keys(self.timed_keys)
         if not isinstance(self.lie_alert_sound, str) or not self.lie_alert_sound.strip():
             raise ValueError("lie_alert_sound 须为 beep、正整数编号字符串或 PCM WAV 文件路径")
         if not isinstance(self.window_title, str) or not self.window_title.strip():
@@ -148,6 +151,7 @@ def load_garden(path):
             raw[name] = tuple(raw[name])
     if "bottom_path" in raw:
         raw["bottom_path"] = tuple(tuple(point) for point in raw["bottom_path"])
+    if "timed_keys" in raw:raw["timed_keys"]=tuple(raw["timed_keys"])
     config = replace(base, **raw)
     config.validate()
     return config
@@ -166,6 +170,7 @@ class GardenCycle:
         self.vc = config.vision_config()
         self.direction = "right"
         self.next_alt = None if start_alt else float("inf")
+        self.timed_keys = TimedKeys(config.timed_keys)
         self.busy_until = 0.
         self.completed_round_trips = 0
         self.left_seen = self.right_seen = False
@@ -276,6 +281,11 @@ class GardenCycle:
         if self.next_alt is None or now >= self.next_alt:
             self.walk_at = self.walk_x = None
             return Action("alt", reason="挂机开始或定时 Alt；只按实际发送时间计时")
+        if not self.recovering:
+            timed=self.timed_keys.action(now)
+            if timed is not None:
+                self.walk_at=self.walk_x=None
+                return timed
         recovery = self.recover_position(x, now)
         if recovery is not None:
             return recovery
@@ -364,6 +374,12 @@ class GardenCycle:
         elif action.kind == "alt":
             self.next_alt = pressed_at + self.c.alt_interval
             self.busy_until = pressed_at + .15
+        elif action.kind == "timed_key":
+            hold=self.timed_keys.executed(action.direction,pressed_at)
+            self.busy_until=pressed_at+hold+.05
+            self.facing=""
+            # Exclude the planned tap duration without erasing a real stationary history.
+            if self.stationary_at is not None:self.stationary_at+=hold+.05
         elif action.kind == "teleport":
             self.facing = action.direction
             self.teleport_origin = obs.position[0]
