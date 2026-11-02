@@ -17,6 +17,9 @@
     ]
   ],
   "pit_y_threshold": 0.35,
+  "pit_x_margin": 0.02,
+  "pit_exit_frames": 3,
+  "boundary_overrun": 0.02,
   "attack_zones": [
     [
       0.745,
@@ -42,6 +45,7 @@
   "pit_stuck_seconds": 0.5,
   "ground_stuck_seconds": 2.3333333333333335,
   "ground_stuck_dx": 0.01,
+  "ground_jump_attempts": 2,
   "alt_interval": 190.0,
   "timed_keys": [
     {

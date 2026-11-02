@@ -18,6 +18,7 @@ class PigExecutor(InputExecutor):
         self.stop()
         pressed=self.clock()
         sent=False
+        keep_motion=False
         try:
             self.check()
             if action.kind=='wait':return pressed
@@ -27,11 +28,17 @@ class PigExecutor(InputExecutor):
             pressed=self.press('space' if action.kind=='jump' else action.key)
             sent=True
             self.delay(action.hold)
+            if action.kind=='jump':
+                self.release('space')
+                self.check()
+                with self.lock:self.hold_deadline=self.clock()+.25
+                keep_motion=True
             return pressed
         except InputCancelled:
             if sent:return pressed
             raise
-        finally:self.stop()
+        finally:
+            if not keep_motion:self.stop()
 
 
 def setup(path):
@@ -55,6 +62,31 @@ def setup(path):
         config.validate(ready=True)
         if minimap_position(frame,roi) is None:raise ValueError('未找到唯一黄点，请避开小地图标题和黄色按钮')
         save_pig(path,config);print(f'已保存 {path}，无需角色、怪物或地形采样。')
+    finally:window.close();cv2.destroyAllWindows()
+
+
+def record_route(path):
+    import cv2
+    from .calibrate import fresh
+    from .vision import minimap_position
+    from .windows import GameWindow
+    c=load_pig(path);c.validate(ready=True)
+    window=GameWindow(c.window_title,frame_size=c.frame_size)
+    def read(message):
+        frame=fresh(window,message)
+        if tuple(frame.shape[1::-1])!=tuple(c.frame_size):raise ValueError('客户区尺寸变化，请先重新 --setup')
+        pos=minimap_position(frame,c.minimap_roi)
+        if pos is None:raise ValueError('没有唯一小地图黄点，原边界未修改')
+        print(f'记录位置 X={pos[0]:.4f} Y={pos[1]:.4f}',flush=True)
+        return pos[0]
+    try:
+        left=read('先手动站到最左侧安全站立点，再截图；程序不发送按键。')
+        right=read('再手动站到最右侧安全掉头点：应在最后一个坑的右上方平台，不能站在坑底；程序不发送按键。')
+        if right-left<.1:raise ValueError('记录顺序或左右跨度不正确，原边界未修改')
+        inset=min(c.left_normal-c.left_full,(right-left)/4)
+        updated=replace(c,left_full=left,left_normal=left+inset,right_turn=right)
+        save_pig(path,updated)
+        print(f'边界已保存：最左={left:.4f}，正常左掉头={updated.left_normal:.4f}，右掉头={right:.4f}；坑和其他参数保留。',flush=True)
     finally:window.close();cv2.destroyAllWindows()
 
 
@@ -121,7 +153,7 @@ def run_pig(config,path,send_keys=False,show=False):
             position=minimap_position(image,(0,0,image.shape[1],image.shape[0]))
             action=brain.decide(position,now)
             if now-logged>=1:
-                print(f'pos={position} direction={brain.direction} left_count={brain.left_count} {action.kind}: {action.reason}',flush=True);logged=now
+                print(f'pos={position} direction={brain.direction} left_count={brain.left_count} pit={brain.pit_index} stuck={brain.walk_seconds:.2f}s jump_tries={brain.ground_jumps} {action.kind}: {action.reason}',flush=True);logged=now
             if monitor and now-scan_log>=5:print(monitor.status(),flush=True);scan_log=now
             if executor:
                 try:brain.executed(action,executor.execute(action))
@@ -146,7 +178,7 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description='Pig单层巡逻：小地图定位、定点攻击、跳坑、4组定时键与测谎停键报警')
     parser.add_argument('--config',type=Path,default=Path('config.pig.local.json'))
     group=parser.add_mutually_exclusive_group()
-    for flag in ('setup','run','observe','calibrate-alert','test-alert-sound'):
+    for flag in ('setup','record-route','run','observe','calibrate-alert','test-alert-sound'):
         group.add_argument('--'+flag,action='store_true')
     parser.add_argument('--show',action='store_true')
     parser.add_argument('--image',type=Path)
@@ -155,6 +187,7 @@ def main(argv=None):
     if args.image and not args.calibrate_alert:parser.error('--image 仅用于 --calibrate-alert')
     try:
         if args.setup:setup(path)
+        elif args.record_route:record_route(path)
         elif args.calibrate_alert:
             from .lie_alert import calibrate_alert
             calibrate_alert(path,args.image,loader=load_pig,saver=save_pig)

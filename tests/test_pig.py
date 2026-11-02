@@ -10,7 +10,7 @@ import threading
 import time
 
 from lionbot.pig_cycle import PigConfig,PigCycle,PigAction,load_pig,save_pig
-from lionbot.pig import PigExecutor,main,run_pig
+from lionbot.pig import PigExecutor,main,run_pig,record_route
 from lionbot.config import Config
 from tests.test_controls import Clock,Keyboard
 
@@ -72,11 +72,71 @@ class PigTests(unittest.TestCase):
         self.assertEqual([event[:2] for event in keyboard.events],[('press','1'),('release','1')])
 
     def test_ground_stuck_counts_walk_only_and_position_loss_clears_it(self):
-        brain=PigCycle(config(ground_stuck_seconds=.5))
+        brain=PigCycle(config(ground_stuck_seconds=.5,ground_jump_attempts=0))
         for i in range(7):
             a=brain.decide((.5,.1),i*.1);brain.executed(a,i*.1)
         self.assertEqual(brain.direction,'left')
         brain.decide(None,20);self.assertEqual(brain.walk_seconds,0)
+
+    def test_right_pit_lip_and_airborne_y_do_not_reverse(self):
+        brain=PigCycle(config(right_turn=.735))
+        a=brain.decide((.72,.7),0);brain.executed(a,0)
+        kinds=[]
+        for i in range(1,24):
+            # Just outside the old .736 pit limit, with airborne Y fluctuations.
+            a=brain.decide((.742,.1 if i%2 else .7),i*.1)
+            self.assertEqual(brain.direction,'right')
+            kinds.append(a.kind);brain.executed(a,i*.1)
+        self.assertGreaterEqual(kinds.count('jump'),2)
+
+    def test_exit_requires_multiple_frames_and_boundary_still_turns(self):
+        brain=PigCycle(config())
+        a=brain.decide((.72,.7),0);brain.executed(a,0)
+        brain.decide((.78,.1),.1);self.assertIsNotNone(brain.pit_index)
+        brain.decide((.78,.1),.2);self.assertIsNotNone(brain.pit_index)
+        brain.decide((.78,.1),.3);self.assertIsNone(brain.pit_index)
+        self.assertEqual(brain.decide((.82,.1),.4).direction,'left')
+
+    def test_unrecognized_pit_tries_jumps_before_reversing(self):
+        brain=PigCycle(config(ground_stuck_seconds=.5))
+        jumps=0
+        for i in range(60):
+            a=brain.decide((.77,.7),i*.1)
+            if a.kind=='jump':jumps+=1
+            brain.executed(a,i*.1)
+            if brain.direction=='left':break
+        self.assertEqual(jumps,2)
+        self.assertEqual(brain.direction,'left')
+
+    def test_jump_keeps_horizontal_key_until_next_walk_or_guard_timeout(self):
+        for direction in ('left','right'):
+            clock=Clock();keyboard=Keyboard(clock)
+            executor=PigExecutor(keyboard,Config(),clock=clock.time,sleep=clock.sleep)
+            executor.execute(PigAction('jump',direction,hold=.36))
+            self.assertEqual(keyboard.held,{direction})
+            executor.execute(PigAction('walk',direction))
+            self.assertEqual(keyboard.held,{direction})
+            clock.sleep(.26);executor.guard_once()
+            self.assertFalse(keyboard.held)
+
+    def test_record_route_preserves_other_parameters_and_rejects_bad_order(self):
+        import numpy as np
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'config.pig.local.json'
+            c=config(frame_size=(640,480),minimap_roi=(0,0,100,50))
+            save_pig(path,c)
+            with patch('lionbot.windows.GameWindow') as window, patch('lionbot.calibrate.fresh',return_value=np.zeros((480,640,3),dtype=np.uint8)), \
+                 patch('lionbot.vision.minimap_position',side_effect=[(.18,.1),(.84,.1)]),redirect_stdout(io.StringIO()):
+                record_route(path)
+            updated=load_pig(path)
+            self.assertEqual((updated.left_full,updated.right_turn),(.18,.84))
+            self.assertAlmostEqual(updated.left_normal,.27)
+            self.assertEqual(updated.timed_keys,c.timed_keys)
+            before=path.read_bytes()
+            with patch('lionbot.windows.GameWindow'),patch('lionbot.calibrate.fresh',return_value=np.zeros((480,640,3),dtype=np.uint8)), \
+                 patch('lionbot.vision.minimap_position',side_effect=[(.8,.1),(.2,.1)]),redirect_stdout(io.StringIO()),self.assertRaises(ValueError):
+                record_route(path)
+            self.assertEqual(path.read_bytes(),before)
 
     def test_config_roundtrip_and_validation(self):
         with tempfile.TemporaryDirectory() as folder:
