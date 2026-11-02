@@ -1,0 +1,75 @@
+{
+  "window_title": "冒险岛怀旧服",
+  "frame_size": null,
+  "minimap_roi": null,
+  "left_full": 0.16,
+  "left_normal": 0.25,
+  "left_normal_turns": 4,
+  "right_turn": 0.81,
+  "pits": [
+    [
+      0.333,
+      0.417
+    ],
+    [
+      0.651,
+      0.736
+    ]
+  ],
+  "pit_y_threshold": 0.35,
+  "attack_zones": [
+    [
+      0.745,
+      0.805
+    ],
+    [
+      0.6,
+      0.65
+    ],
+    [
+      0.487,
+      0.55
+    ]
+  ],
+  "attack_key": "a",
+  "attack_hold": 0.08,
+  "attack_interval": 0.3,
+  "zone_shots": 2,
+  "walk_attack_chance": 0.15,
+  "edge_attack": true,
+  "jump_hold": 0.36,
+  "jump_cooldown": 1.0,
+  "pit_stuck_seconds": 0.5,
+  "ground_stuck_seconds": 2.3333333333333335,
+  "ground_stuck_dx": 0.01,
+  "alt_interval": 190.0,
+  "timed_keys": [
+    {
+      "key": "1",
+      "interval_seconds": 0.0,
+      "hold_seconds": 0.1
+    },
+    {
+      "key": "2",
+      "interval_seconds": 0.0,
+      "hold_seconds": 0.1
+    },
+    {
+      "key": "3",
+      "interval_seconds": 0.0,
+      "hold_seconds": 0.1
+    },
+    {
+      "key": "4",
+      "interval_seconds": 0.0,
+      "hold_seconds": 0.1
+    }
+  ],
+  "fps": 15.0,
+  "lie_alert_enabled": true,
+  "lie_alert_template": "calibration/lie-alert-title.png",
+  "lie_alert_interval": 0.25,
+  "lie_alert_threshold": 0.9,
+  "lie_alert_roi": null,
+  "lie_alert_sound": "beep"
+}

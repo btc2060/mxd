@@ -8,5 +8,7 @@ config.plants.local.json.*.bak
 config.simple.local.json
 config.garden*.local.json
 config.garden*.local.json.*.bak
+config.pig*.local.json
+config.pig*.local.json.*.bak
 calibration/
 debug-output/
