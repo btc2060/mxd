@@ -126,11 +126,11 @@ class GardenConfig:
         if (type(self.lie_alert_enabled) is not bool or not .1 <= self.lie_alert_interval <= 2
                 or not .7 <= self.lie_alert_threshold <= 1):
             raise ValueError("测谎开关/间隔/阈值不合法")
-        if (type(self.teleport_enabled) is not bool or self.teleport_cooldown < .6 or self.teleport_settle < .2
+        if (type(self.teleport_enabled) is not bool or self.teleport_cooldown < .6 or self.teleport_settle < .05
                 or self.teleport_settle > self.teleport_cooldown
                 or (self.teleport_max_dx is not None and not .005 <= self.teleport_max_dx < .5)):
-            raise ValueError("瞬移开关/位移不合法；冷却至少 0.6 秒，落点等待至少 0.2 秒且不超过冷却")
-        self.vision_config().validate()
+            raise ValueError("瞬移开关/位移不合法；冷却至少 0.6 秒，落点等待至少 0.05 秒且不超过冷却")
+        self.vision_config().validate(min_attack_interval=.3)
         if ready and (self.frame_size is None or self.minimap_roi is None or self.combat_roi is None
                       or self.world_pixels_per_x is None or self.attack_range_px is None
                       or self.left_x is None or len(self.bottom_path) < 2):
@@ -181,6 +181,7 @@ class GardenCycle:
         self.clearing = False
         self.next_teleport = 0.
         self.teleport_origin = None
+        self.teleport_at = None
         self.teleport_misses = 0
         self.teleport_fault = False
         self.suspend()
@@ -255,11 +256,15 @@ class GardenCycle:
             return Action("wait", reason="等待 D 施法或转身完成")
         if self.teleport_origin is not None:
             distance = abs(x - self.teleport_origin)
+            if (self.teleport_at is not None and distance < .5 / self.c.minimap_roi[2]
+                    and now < self.teleport_at + max(.35,self.c.teleport_settle)):
+                return Action('wait',reason='等待 F 落点黄点更新；确认位移后立即继续')
             if distance > self.c.teleport_max_dx + 1 / self.c.minimap_roi[2]:
                 self.teleport_fault = True
             self.teleport_misses = self.teleport_misses + 1 if distance < .5 / self.c.minimap_roi[2] else 0
             self.teleport_fault |= self.teleport_misses >= 3
             self.teleport_origin = None
+            self.teleport_at = None
         margin = max(self.c.boundary_margin, 1 / self.c.minimap_roi[2])
         if x <= self.c.left_x + margin:
             if self.direction != "right":
@@ -383,6 +388,7 @@ class GardenCycle:
         elif action.kind == "teleport":
             self.facing = action.direction
             self.teleport_origin = obs.position[0]
+            self.teleport_at = pressed_at
             self.next_teleport = pressed_at + self.c.teleport_cooldown
             self.busy_until = pressed_at + self.c.teleport_settle
             self.walk_at = self.walk_x = None

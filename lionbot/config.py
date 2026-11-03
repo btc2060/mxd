@@ -103,7 +103,7 @@ class Config:
             return self.attack_range_px
         return self.attack_range * self.world_pixels_per_x if self.world_pixels_per_x is not None else None
 
-    def validate(self) -> None:
+    def validate(self, *, min_attack_interval: float = .9) -> None:
         if self.behavior not in ("patrol", "stationary"):
             raise ValueError("behavior 只能是 patrol 或 stationary")
         if (not 5 <= self.stationary_fps <= 20 or type(self.plant_color_fallback) is not bool
@@ -132,8 +132,8 @@ class Config:
         for roi in (self.minimap_roi, self.combat_roi):
             if roi is not None and (len(roi) != 4 or min(roi[:2]) < 0 or min(roi[2:]) <= 0):
                 raise ValueError("ROI 必须为 [x, y, width, height]")
-        if not 0 < self.attack_hold < self.attack_interval or self.attack_interval < 0.9:
-            raise ValueError("攻击间隔至少 0.9 秒，按住时间必须小于间隔")
+        if not 0 < self.attack_hold < self.attack_interval or self.attack_interval < min_attack_interval:
+            raise ValueError(f"攻击间隔至少 {min_attack_interval:g} 秒，按住时间必须小于间隔")
         if not .03 <= self.face_hold <= .2:
             raise ValueError("转身按键 face_hold 必须为 0.03～0.2 秒")
         if self.alt_interval <= 0 or not 0 < self.attack_range <= 1:
